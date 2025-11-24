@@ -94,6 +94,24 @@ type UserPermissions struct {
 	CriaPick     bool   `json:"CRIAPICK"`
 }
 
+// ItemDetail define o formato padronizado da resposta de detalhes
+type ItemDetail struct {
+	CodArm      int     `json:"codArm"`
+	SeqEnd      int     `json:"seqEnd"`
+	CodRua      string  `json:"codRua"`
+	CodPrd      int     `json:"codPrd"`
+	CodApt      string  `json:"codApt"`
+	CodProd     int     `json:"codProd"`
+	DescrProd   string  `json:"descrProd"`
+	Marca       string  `json:"marca"`
+	DatVal      string  `json:"datVal"`
+	QtdPro      float64 `json:"qtdPro"`
+	EndPic      string  `json:"endPic"`
+	NumDoc      int     `json:"numDoc"`
+	QtdCompleta string  `json:"qtdCompleta"`
+	Derivacao   string  `json:"derivacao"`
+}
+
 // Client estrutura principal
 type Client struct {
 	cfg         *config.Config
@@ -380,6 +398,55 @@ func (c *Client) LoginUser(username, password string) (string, error) {
 		return "", fmt.Errorf("credenciais inválidas")
 	}
 	return result.ResponseBody.JSessionID.Value, nil
+}
+
+// GetItemDetails busca detalhes de um item e retorna padronizado
+func (c *Client) GetItemDetails(codArm int, sequencia string) ([]ItemDetail, error) {
+	seqSanitized := sanitizeStringForSql(sequencia)
+	sql := fmt.Sprintf(`SELECT * FROM V_WMS_ITEM_DETALHES WHERE CODARM = %d AND SEQEND = '%s'`, codArm, seqSanitized)
+	
+	rows, err := c.executeQuery(sql)
+	if err != nil {
+		return nil, err
+	}
+
+	var details []ItemDetail
+	for _, row := range rows {
+		// Funções auxiliares para extração segura (evita panic em nulls)
+		getInt := func(i int) int {
+			if i >= len(row) || row[i] == nil { return 0 }
+			if f, ok := row[i].(float64); ok { return int(f) }
+			return 0
+		}
+		getFloat := func(i int) float64 {
+			if i >= len(row) || row[i] == nil { return 0 }
+			if f, ok := row[i].(float64); ok { return f }
+			return 0
+		}
+		getString := func(i int) string {
+			if i >= len(row) || row[i] == nil { return "" }
+			return fmt.Sprintf("%v", row[i])
+		}
+
+		details = append(details, ItemDetail{
+			CodArm:      getInt(0),
+			SeqEnd:      getInt(1),
+			CodRua:      getString(2),
+			CodPrd:      getInt(3),
+			CodApt:      getString(4),
+			CodProd:     getInt(5),
+			DescrProd:   getString(6),
+			Marca:       getString(7),
+			DatVal:      getString(8),
+			QtdPro:      getFloat(9),
+			EndPic:      getString(10),
+			NumDoc:      getInt(11),
+			QtdCompleta: getString(12),
+			Derivacao:   getString(13),
+		})
+	}
+
+	return details, nil
 }
 
 // SearchItems busca itens no armazém (Otimizada)

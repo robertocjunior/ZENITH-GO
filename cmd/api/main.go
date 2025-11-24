@@ -47,6 +47,7 @@ func main() {
 
 	// Rotas de Produto
 	mux.HandleFunc("/apiv1/search-items", productHandler.HandleSearchItems)
+	mux.HandleFunc("/apiv1/get-item-details", productHandler.HandleGetItemDetails) // Nova rota
 
 	log.Println("Servidor rodando na porta :8080")
 	if err := http.ListenAndServe(":8080", mux); err != nil {
