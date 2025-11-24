@@ -6,25 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"zenith-go/internal/config"
 )
 
-// --- Definição de Erros Públicos (Exportados) ---
+// --- Erros Públicos ---
 var (
-	ErrUserNotFound      = errors.New("usuário inexistente ou nome incorreto")
-	ErrUserNotAuthorized = errors.New("usuário não possui autorização de acesso (AD_APPPERM)")
+	ErrUserNotFound          = errors.New("usuário inexistente ou nome incorreto")
+	ErrUserNotAuthorized     = errors.New("usuário não possui autorização de acesso (AD_APPPERM)")
+	ErrDevicePendingApproval = errors.New("dispositivo não autorizado. Solicite a liberação ao administrador")
 )
 
-// --- Structs de Login do Sistema ---
+// --- Structs de Login ---
 type loginResponse struct {
 	BearerToken string `json:"bearerToken"`
 	Error       any    `json:"error"`
 }
 
-// --- Structs de Login Mobile ---
 type simpleValue struct {
 	Value string `json:"$"`
 }
@@ -61,7 +62,25 @@ type dbExplorerResponse struct {
 	} `json:"responseBody"`
 }
 
-// Client gerencia a comunicação com o ERP
+// --- Structs DatasetSP.save (Inserção) ---
+type datasetSaveRequest struct {
+	ServiceName string `json:"serviceName"`
+	RequestBody struct {
+		EntityName string `json:"entityName"`
+		Fields     []string `json:"fields"`
+		Records    []datasetRecord `json:"records"`
+	} `json:"requestBody"`
+}
+
+type datasetRecord struct {
+	Values map[string]string `json:"values"`
+}
+
+type datasetSaveResponse struct {
+	Status string `json:"status"`
+}
+
+// Client estrutura principal
 type Client struct {
 	cfg         *config.Config
 	httpClient  *http.Client
@@ -70,7 +89,6 @@ type Client struct {
 	mu          sync.RWMutex
 }
 
-// NewClient cria uma nova instância do cliente
 func NewClient(cfg *config.Config) *Client {
 	return &Client{
 		cfg:        cfg,
@@ -78,7 +96,7 @@ func NewClient(cfg *config.Config) *Client {
 	}
 }
 
-// Authenticate realiza o login do SISTEMA (AppKey/Token)
+// Authenticate login do SISTEMA
 func (c *Client) Authenticate() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -113,7 +131,6 @@ func (c *Client) Authenticate() error {
 		return fmt.Errorf("token não retornado pelo ERP")
 	}
 
-	// Armazena o token e define expiração para 4m50s
 	c.bearerToken = result.BearerToken
 	c.tokenExpiry = time.Now().Add(4*time.Minute + 50*time.Second)
 
@@ -121,7 +138,6 @@ func (c *Client) Authenticate() error {
 	return nil
 }
 
-// GetToken retorna o token do sistema válido.
 func (c *Client) GetToken() (string, error) {
 	c.mu.RLock()
 	if c.bearerToken != "" && time.Now().Before(c.tokenExpiry) {
@@ -140,16 +156,13 @@ func (c *Client) GetToken() (string, error) {
 	return c.bearerToken, nil
 }
 
-// VerifyUserAccess verifica existência e permissão em UMA ÚNICA CONSULTA
+// VerifyUserAccess valida permissão básica do usuário
 func (c *Client) VerifyUserAccess(username string) (float64, error) {
 	sysToken, err := c.GetToken()
 	if err != nil {
 		return 0, err
 	}
 
-	// SQL OTIMIZADO:
-	// 1. Busca CODUSU
-	// 2. Cria coluna 'PERMITIDO' (TRUE/FALSE) verificando AD_APPPERM
 	sqlQuery := fmt.Sprintf(`
 		SELECT 
 			U.CODUSU, 
@@ -188,39 +201,146 @@ func (c *Client) VerifyUserAccess(username string) (float64, error) {
 
 	var result dbExplorerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("erro ao decodificar dbexplorer: %w", err)
+		return 0, fmt.Errorf("erro no json dbexplorer: %w", err)
 	}
 
-	if result.Status != "1" {
-		return 0, fmt.Errorf("erro na consulta SQL (Status %s)", result.Status)
-	}
-
-	// --- Lógica de Diferenciação de Erros ---
-
-	// CASO 1: Usuário Inexistente (Nenhuma linha retornada)
 	if len(result.ResponseBody.Rows) == 0 {
 		return 0, ErrUserNotFound
 	}
 
-	// Sankhya retorna números como float64 na interface genérica
 	row := result.ResponseBody.Rows[0]
 	codUsu := row[0].(float64)
 	permitido := row[1].(string)
 
-	// CASO 2: Usuário Existe, mas sem Permissão (Coluna PERMITIDO == FALSE)
 	if permitido != "TRUE" {
 		return 0, ErrUserNotAuthorized
 	}
 
-	// CASO 3: Sucesso
 	return codUsu, nil
 }
 
-// LoginUser realiza o login do usuário final na API do Sankhya
+// VerifyDevice verifica se o device está autorizado ou registra se não existir
+func (c *Client) VerifyDevice(codUsu int, deviceToken string) error {
+	sysToken, err := c.GetToken()
+	if err != nil {
+		return err
+	}
+
+	// 1. Consulta SQL para verificar o device
+	sqlQuery := fmt.Sprintf(`
+		SELECT DEVICETOKEN, CODUSU, ATIVO 
+		FROM AD_DISPAUT 
+		WHERE CODUSU = %d AND DEVICETOKEN = '%s'`, codUsu, deviceToken)
+
+	reqBody := dbExplorerRequest{
+		ServiceName: "DbExplorerSP.executeQuery",
+	}
+	reqBody.RequestBody.SQL = sqlQuery
+	reqBody.RequestBody.Params = make(map[string]any)
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json", c.cfg.ApiUrl)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+sysToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var result dbExplorerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("erro json device check: %w", err)
+	}
+
+	// CENÁRIO 1: Device NÃO existe no banco -> Inserir e retornar erro
+	if len(result.ResponseBody.Rows) == 0 {
+		if regErr := c.registerDevice(sysToken, codUsu, deviceToken); regErr != nil {
+			return fmt.Errorf("erro ao registrar novo device: %w", regErr)
+		}
+		return ErrDevicePendingApproval
+	}
+
+	// CENÁRIO 2: Device existe -> Verificar se está ATIVO
+	row := result.ResponseBody.Rows[0]
+	ativo := row[2].(string) // Terceira coluna (index 2) é ATIVO
+
+	if ativo == "S" {
+		return nil // Sucesso, autorizado
+	}
+
+	// Se ATIVO = 'N'
+	return ErrDevicePendingApproval
+}
+
+// registerDevice insere o novo dispositivo na tabela AD_DISPAUT
+func (c *Client) registerDevice(token string, codUsu int, deviceToken string) error {
+	// Data atual DD/MM/YYYY
+	dhGer := time.Now().Format("02/01/2006")
+
+	reqBody := datasetSaveRequest{
+		ServiceName: "DatasetSP.save",
+	}
+	reqBody.RequestBody.EntityName = "AD_DISPAUT"
+	reqBody.RequestBody.Fields = []string{"CODUSU", "DEVICETOKEN", "DESCRDISP", "ATIVO", "DHGER"}
+	
+	// Monta o registro
+	record := datasetRecord{
+		Values: map[string]string{
+			"0": strconv.Itoa(codUsu), // CODUSU
+			"1": deviceToken,          // DEVICETOKEN
+			"2": "Novo Dispositivo",   // DESCRDISP (Padrão)
+			"3": "N",                  // ATIVO (Padrão N)
+			"4": dhGer,                // DHGER
+		},
+	}
+	reqBody.RequestBody.Records = []datasetRecord{record}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DatasetSP.save&outputType=json", c.cfg.ApiUrl)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var result datasetSaveResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("erro decode save device: %w", err)
+	}
+
+	if result.Status != "1" {
+		return fmt.Errorf("erro ao salvar device no ERP (status %s)", result.Status)
+	}
+
+	return nil
+}
+
+// LoginUser realiza login final
 func (c *Client) LoginUser(username, password string) (string, error) {
 	sysToken, err := c.GetToken()
 	if err != nil {
-		return "", fmt.Errorf("erro de autenticação do sistema: %w", err)
+		return "", fmt.Errorf("erro sistema: %w", err)
 	}
 
 	reqBody := mobileLoginRequest{
@@ -251,7 +371,7 @@ func (c *Client) LoginUser(username, password string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("erro na requisição sankhya: status %d", resp.StatusCode)
+		return "", fmt.Errorf("status http erro: %d", resp.StatusCode)
 	}
 
 	var result mobileLoginResponse
@@ -260,7 +380,7 @@ func (c *Client) LoginUser(username, password string) (string, error) {
 	}
 
 	if result.Status != "1" {
-		return "", fmt.Errorf("usuário ou senha inválidos (ERP recusou login)")
+		return "", fmt.Errorf("credenciais inválidas")
 	}
 
 	return result.ResponseBody.JSessionID.Value, nil
