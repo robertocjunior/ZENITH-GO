@@ -80,6 +80,19 @@ type datasetSaveResponse struct {
 	Status string `json:"status"`
 }
 
+// --- Structs de Permissões (ATUALIZADO) ---
+// As tags JSON agora refletem os nomes exatos das colunas do Sankhya
+type UserPermissions struct {
+	CodUsu   int    `json:"CODUSU"`
+	ListaArm string `json:"LISTA_ARM"`
+	Transf   bool   `json:"TRANSF"`
+	Baixa    bool   `json:"BAIXA"`
+	Pick     bool   `json:"PICK"`
+	Corre    bool   `json:"CORRE"`
+	BxaPick  bool   `json:"BXAPICK"`
+	CriaPick bool   `json:"CRIAPICK"`
+}
+
 // Client estrutura principal
 type Client struct {
 	cfg         *config.Config
@@ -226,7 +239,6 @@ func (c *Client) VerifyDevice(codUsu int, deviceToken string) error {
 		return err
 	}
 
-	// 1. Consulta SQL para verificar o device
 	sqlQuery := fmt.Sprintf(`
 		SELECT DEVICETOKEN, CODUSU, ATIVO 
 		FROM AD_DISPAUT 
@@ -262,7 +274,6 @@ func (c *Client) VerifyDevice(codUsu int, deviceToken string) error {
 		return fmt.Errorf("erro json device check: %w", err)
 	}
 
-	// CENÁRIO 1: Device NÃO existe no banco -> Inserir e retornar erro
 	if len(result.ResponseBody.Rows) == 0 {
 		if regErr := c.registerDevice(sysToken, codUsu, deviceToken); regErr != nil {
 			return fmt.Errorf("erro ao registrar novo device: %w", regErr)
@@ -270,21 +281,17 @@ func (c *Client) VerifyDevice(codUsu int, deviceToken string) error {
 		return ErrDevicePendingApproval
 	}
 
-	// CENÁRIO 2: Device existe -> Verificar se está ATIVO
 	row := result.ResponseBody.Rows[0]
-	ativo := row[2].(string) // Terceira coluna (index 2) é ATIVO
+	ativo := row[2].(string)
 
 	if ativo == "S" {
-		return nil // Sucesso, autorizado
+		return nil
 	}
 
-	// Se ATIVO = 'N'
 	return ErrDevicePendingApproval
 }
 
-// registerDevice insere o novo dispositivo na tabela AD_DISPAUT
 func (c *Client) registerDevice(token string, codUsu int, deviceToken string) error {
-	// Data atual DD/MM/YYYY
 	dhGer := time.Now().Format("02/01/2006")
 
 	reqBody := datasetSaveRequest{
@@ -293,14 +300,13 @@ func (c *Client) registerDevice(token string, codUsu int, deviceToken string) er
 	reqBody.RequestBody.EntityName = "AD_DISPAUT"
 	reqBody.RequestBody.Fields = []string{"CODUSU", "DEVICETOKEN", "DESCRDISP", "ATIVO", "DHGER"}
 	
-	// Monta o registro
 	record := datasetRecord{
 		Values: map[string]string{
-			"0": strconv.Itoa(codUsu), // CODUSU
-			"1": deviceToken,          // DEVICETOKEN
-			"2": "Novo Dispositivo",   // DESCRDISP (Padrão)
-			"3": "N",                  // ATIVO (Padrão N)
-			"4": dhGer,                // DHGER
+			"0": strconv.Itoa(codUsu),
+			"1": deviceToken,
+			"2": "Novo Dispositivo",
+			"3": "N",
+			"4": dhGer,
 		},
 	}
 	reqBody.RequestBody.Records = []datasetRecord{record}
@@ -334,6 +340,89 @@ func (c *Client) registerDevice(token string, codUsu int, deviceToken string) er
 	}
 
 	return nil
+}
+
+// GetUserPermissions busca as permissões detalhadas do usuário
+func (c *Client) GetUserPermissions(codUsu int) (*UserPermissions, error) {
+	sysToken, err := c.GetToken()
+	if err != nil {
+		return nil, err
+	}
+
+	sqlQuery := fmt.Sprintf(`
+		SELECT 
+			LISTAGG(d.CODARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_ARM, 
+			p.CODUSU, 
+			p.TRANSF, 
+			p.BAIXA, 
+			p.PICK, 
+			p.CORRE, 
+			p.BXAPICK, 
+			p.CRIAPICK 
+		FROM AD_APPPERM p 
+		JOIN AD_PERMEND d ON d.NUMREG = p.NUMREG 
+		WHERE p.CODUSU = %d 
+		GROUP BY p.CODUSU, p.TRANSF, p.BAIXA, p.PICK, p.CORRE, p.BXAPICK, p.CRIAPICK`, codUsu)
+
+	reqBody := dbExplorerRequest{
+		ServiceName: "DbExplorerSP.executeQuery",
+	}
+	reqBody.RequestBody.SQL = sqlQuery
+	reqBody.RequestBody.Params = make(map[string]any)
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json", c.cfg.ApiUrl)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+sysToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result dbExplorerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("erro ao buscar permissões: %w", err)
+	}
+
+	if len(result.ResponseBody.Rows) == 0 {
+		return nil, fmt.Errorf("nenhuma permissão encontrada para codusu %d", codUsu)
+	}
+
+	row := result.ResponseBody.Rows[0]
+	
+	// Função auxiliar para converter "S"/"N" em bool
+	toBool := func(val any) bool {
+		s, ok := val.(string)
+		if !ok {
+			return false
+		}
+		return s == "S"
+	}
+
+	// Mapeamento dos campos (Agora com chaves JSON iguais ao banco)
+	perms := &UserPermissions{
+		ListaArm: fmt.Sprintf("%v", row[0]), // LISTA_ARM
+		CodUsu:   int(row[1].(float64)),     // CODUSU
+		Transf:   toBool(row[2]),            // TRANSF
+		Baixa:    toBool(row[3]),            // BAIXA
+		Pick:     toBool(row[4]),            // PICK
+		Corre:    toBool(row[5]),            // CORRE
+		BxaPick:  toBool(row[6]),            // BXAPICK
+		CriaPick: toBool(row[7]),            // CRIAPICK
+	}
+
+	return perms, nil
 }
 
 // LoginUser realiza login final

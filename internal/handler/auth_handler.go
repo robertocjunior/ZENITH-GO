@@ -20,7 +20,7 @@ type loginInput struct {
 	DeviceToken string `json:"deviceToken"`
 }
 
-type logoutInput struct {
+type sessionInput struct {
 	SessionToken string `json:"sessionToken"`
 }
 
@@ -39,20 +39,20 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Parse Input
 	var input loginInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "JSON inválido", http.StatusBadRequest)
 		return
 	}
 
-	// 2. Definir Device Token (UUID Novo ou Existente)
+	// 1. Gerenciamento de Device Token (UUID Novo ou Existente)
 	finalDeviceToken := input.DeviceToken
 	if finalDeviceToken == "" {
 		finalDeviceToken = auth.NewDeviceToken()
 	}
 
-	// 3. Verificar Acesso do Usuário (Existe? Tem Permissão?)
+	// 2. Verificar Acesso do Usuário (Existe? Tem Permissão?)
+	// Retorna o CODUSU necessário para os próximos passos
 	codUsuFloat, err := h.Client.VerifyUserAccess(input.Username)
 	if err != nil {
 		if errors.Is(err, sankhya.ErrUserNotFound) {
@@ -66,16 +66,14 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	codUsu := int(codUsuFloat)
 
-	// 4. Verificar Liberação do Dispositivo (Novo passo)
-	// Se não existir, ele cria e retorna erro. Se existir inativo, retorna erro.
+	// 3. Verificar Liberação do Dispositivo
 	if err := h.Client.VerifyDevice(codUsu, finalDeviceToken); err != nil {
 		if errors.Is(err, sankhya.ErrDevicePendingApproval) {
-			// Retornamos 403 (Forbidden) com a mensagem explicativa para o App exibir
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]string{
 				"error":       err.Error(),
-				"deviceToken": finalDeviceToken, // Importante retornar o Token para o App salvar
+				"deviceToken": finalDeviceToken,
 			})
 			return
 		}
@@ -83,21 +81,20 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Login Efetivo no Sankhya (Validação de Senha)
+	// 4. Login Efetivo no Sankhya (Validação de Senha)
 	snkJSession, err := h.Client.LoginUser(input.Username, input.Password)
 	if err != nil {
 		http.Error(w, "Credenciais inválidas", http.StatusUnauthorized)
 		return
 	}
 
-	// 6. Gerar JWT
-	jwtToken, err := auth.GenerateToken(input.Username, h.Config.JwtSecret)
+	// 5. Gera o token JWT da API incluindo o CODUSU no payload
+	jwtToken, err := auth.GenerateToken(input.Username, codUsu, h.Config.JwtSecret)
 	if err != nil {
 		http.Error(w, "Erro ao gerar sessão", http.StatusInternalServerError)
 		return
 	}
 
-	// 7. Resposta de Sucesso
 	response := loginOutput{
 		Username:     input.Username,
 		CodUsu:       codUsu,
@@ -116,7 +113,7 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var input logoutInput
+	var input sessionInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "JSON inválido", http.StatusBadRequest)
 		return
@@ -124,4 +121,37 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
+}
+
+// HandleGetPermissions busca permissões usando o CODUSU extraído do Token
+// Rota: POST /apiv1/permissions
+// Body: { "sessionToken": "..." }
+func (h *AuthHandler) HandleGetPermissions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método não permitido (use POST com sessionToken)", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var input sessionInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "JSON inválido", http.StatusBadRequest)
+		return
+	}
+
+	// 1. Valida o token e extrai o CODUSU (Segurança)
+	codUsu, err := auth.ValidateToken(input.SessionToken, h.Config.JwtSecret)
+	if err != nil {
+		http.Error(w, "Sessão inválida ou expirada: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// 2. Busca permissões no ERP usando o ID confiável do token
+	permissions, err := h.Client.GetUserPermissions(codUsu)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(permissions)
 }
