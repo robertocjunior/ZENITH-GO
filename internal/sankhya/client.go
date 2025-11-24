@@ -206,7 +206,8 @@ func (c *Client) GetToken() (string, error) {
 }
 
 // executeQuery é um helper privado para rodar SQLs
-func (c *Client) executeQuery(sql string) ([][]any, error) {
+// SEGURANÇA: Agora aceita mapa de parâmetros para queries parametrizadas
+func (c *Client) executeQuery(sql string, params map[string]any) ([][]any, error) {
 	sysToken, err := c.GetToken()
 	if err != nil {
 		return nil, err
@@ -216,7 +217,13 @@ func (c *Client) executeQuery(sql string) ([][]any, error) {
 		ServiceName: "DbExplorerSP.executeQuery",
 	}
 	reqBody.RequestBody.SQL = sql
-	reqBody.RequestBody.Params = make(map[string]any)
+	
+	// Inicializa o mapa se for nulo
+	if params == nil {
+		reqBody.RequestBody.Params = make(map[string]any)
+	} else {
+		reqBody.RequestBody.Params = params
+	}
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
@@ -248,7 +255,8 @@ func (c *Client) executeQuery(sql string) ([][]any, error) {
 
 // VerifyUserAccess valida permissão básica do usuário
 func (c *Client) VerifyUserAccess(username string) (float64, error) {
-	sqlQuery := fmt.Sprintf(`
+	// SEGURANÇA: Uso de parâmetro :NOMEUSU
+	sqlQuery := `
 		SELECT 
 			U.CODUSU, 
 			CASE 
@@ -256,9 +264,13 @@ func (c *Client) VerifyUserAccess(username string) (float64, error) {
 				ELSE 'FALSE' 
 			END AS PERMITIDO 
 		FROM TSIUSU U 
-		WHERE U.NOMEUSU = '%s'`, strings.ToUpper(username))
+		WHERE U.NOMEUSU = :NOMEUSU`
 
-	rows, err := c.executeQuery(sqlQuery)
+	params := map[string]any{
+		"NOMEUSU": strings.ToUpper(username),
+	}
+
+	rows, err := c.executeQuery(sqlQuery, params)
 	if err != nil {
 		return 0, err
 	}
@@ -280,12 +292,18 @@ func (c *Client) VerifyUserAccess(username string) (float64, error) {
 
 // VerifyDevice verifica se o device está autorizado
 func (c *Client) VerifyDevice(codUsu int, deviceToken string) error {
-	sqlQuery := fmt.Sprintf(`
+	// SEGURANÇA: Uso de parâmetros
+	sqlQuery := `
 		SELECT DEVICETOKEN, CODUSU, ATIVO 
 		FROM AD_DISPAUT 
-		WHERE CODUSU = %d AND DEVICETOKEN = '%s'`, codUsu, deviceToken)
+		WHERE CODUSU = :CODUSU AND DEVICETOKEN = :DEVICETOKEN`
+	
+	params := map[string]any{
+		"CODUSU":      codUsu,
+		"DEVICETOKEN": deviceToken,
+	}
 
-	rows, err := c.executeQuery(sqlQuery)
+	rows, err := c.executeQuery(sqlQuery, params)
 	if err != nil {
 		return err
 	}
@@ -348,7 +366,8 @@ func (c *Client) registerDevice(token string, codUsu int, deviceToken string) er
 }
 
 func (c *Client) GetUserPermissions(codUsu int) (*UserPermissions, error) {
-	sqlQuery := fmt.Sprintf(`
+	// SEGURANÇA: Uso de parâmetros
+	sqlQuery := `
 		SELECT 
 			LISTAGG(d.CODARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_CODIGOS, 
 			LISTAGG(d.CODARM || ' - ' || a.DESARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_NOMES, 
@@ -356,10 +375,12 @@ func (c *Client) GetUserPermissions(codUsu int) (*UserPermissions, error) {
 		FROM AD_APPPERM p 
 		JOIN AD_PERMEND d ON d.NUMREG = p.NUMREG 
 		JOIN AD_CADARM a ON a.CODARM = d.CODARM 
-		WHERE p.CODUSU = %d 
-		GROUP BY p.CODUSU, p.TRANSF, p.BAIXA, p.PICK, p.CORRE, p.BXAPICK, p.CRIAPICK`, codUsu)
+		WHERE p.CODUSU = :CODUSU 
+		GROUP BY p.CODUSU, p.TRANSF, p.BAIXA, p.PICK, p.CORRE, p.BXAPICK, p.CRIAPICK`
+	
+	params := map[string]any{"CODUSU": codUsu}
 
-	rows, err := c.executeQuery(sqlQuery)
+	rows, err := c.executeQuery(sqlQuery, params)
 	if err != nil {
 		return nil, err
 	}
@@ -419,10 +440,15 @@ func (c *Client) LoginUser(username, password string) (string, error) {
 
 // GetItemDetails busca detalhes de um item e retorna UM único objeto
 func (c *Client) GetItemDetails(codArm int, sequencia string) (*ItemDetail, error) {
-	seqSanitized := sanitizeStringForSql(sequencia)
-	sql := fmt.Sprintf(`SELECT * FROM V_WMS_ITEM_DETALHES WHERE CODARM = %d AND SEQEND = '%s'`, codArm, seqSanitized)
+	// SEGURANÇA: Uso de queries parametrizadas (:CODARM, :SEQEND)
+	sql := `SELECT * FROM V_WMS_ITEM_DETALHES WHERE CODARM = :CODARM AND SEQEND = :SEQEND`
 	
-	rows, err := c.executeQuery(sql)
+	params := map[string]any{
+		"CODARM": codArm,
+		"SEQEND": sequencia,
+	}
+	
+	rows, err := c.executeQuery(sql, params)
 	if err != nil {
 		return nil, err
 	}
@@ -473,8 +499,14 @@ func (c *Client) GetItemDetails(codArm int, sequencia string) (*ItemDetail, erro
 // SearchItems busca itens no armazém (Otimizada) e retorna objetos padronizados
 func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, error) {
 	var sqlBuilder strings.Builder
+	
+	// SEGURANÇA: Mapa de parâmetros
+	params := map[string]any{
+		"CODARM": codArm,
+	}
 
-	sqlBuilder.WriteString(fmt.Sprintf(`
+	// SQL Base
+	sqlBuilder.WriteString(`
 		SELECT /*+ ALL_ROWS */
 			ENDE.SEQEND, 
 			ENDE.CODRUA, 
@@ -495,7 +527,7 @@ func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, err
 			FROM TGFVOA 
 			GROUP BY CODPROD, CODVOL
 		) VOA ON VOA.CODPROD = ENDE.CODPROD AND VOA.CODVOL = ENDE.CODVOL
-		WHERE ENDE.CODARM = %d`, codArm))
+		WHERE ENDE.CODARM = :CODARM`)
 
 	orderBy := " ORDER BY ENDE.ENDPIC DESC, ENDE.DATVAL ASC"
 
@@ -504,29 +536,38 @@ func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, err
 		isNumeric := regexp.MustCompile(`^\d+$`).MatchString(filtroLimpo)
 
 		if isNumeric {
-			filtroNum := sanitizeStringForSql(filtroLimpo)
-			sqlBuilder.WriteString(fmt.Sprintf(` 
+			// Caso numérico: parâmetros simples
+			params["FILTRO_NUM"] = filtroLimpo
+			params["FILTRO_LIKE"] = filtroLimpo + "%" // Para o LIKE '123%'
+
+			sqlBuilder.WriteString(` 
 				AND (
-					ENDE.SEQEND LIKE '%s%%' 
-					OR ENDE.CODPROD = %s 
+					ENDE.SEQEND LIKE :FILTRO_LIKE 
+					OR ENDE.CODPROD = :FILTRO_NUM 
 					OR ENDE.CODPROD = (
 						SELECT CODPROD FROM AD_CADEND 
-						WHERE SEQEND = %s AND CODARM = %d AND ROWNUM = 1
+						WHERE SEQEND = :FILTRO_NUM AND CODARM = :CODARM AND ROWNUM = 1
 					)
-				)`, filtroNum, filtroNum, filtroNum, codArm))
+				)`)
 			
-			orderBy = fmt.Sprintf(` ORDER BY CASE WHEN ENDE.SEQEND = %s THEN 0 ELSE 1 END, ENDE.ENDPIC DESC, ENDE.DATVAL ASC`, filtroNum)
+			// Concatenação segura apenas na estrutura do ORDER BY (case não aceita bind variable na condição do when facilmente em alguns contextos, mas o filtroNum já é validado por regex \d+)
+			orderBy = fmt.Sprintf(` ORDER BY CASE WHEN ENDE.SEQEND = %s THEN 0 ELSE 1 END, ENDE.ENDPIC DESC, ENDE.DATVAL ASC`, filtroLimpo)
 		} else {
+			// Caso texto: parâmetros dinâmicos para cada palavra
 			palavrasChave := strings.Fields(filtroLimpo)
 			if len(palavrasChave) > 0 {
 				sqlBuilder.WriteString(" AND ")
 				var condicoes []string
-				for _, palavra := range palavrasChave {
-					pUpper := sanitizeStringForSql(strings.ToUpper(palavra))
+				for i, palavra := range palavrasChave {
+					// Cria um nome de parâmetro único para cada palavra (ex: TERM0, TERM1)
+					paramName := fmt.Sprintf("TERM%d", i)
+					params[paramName] = "%" + strings.ToUpper(palavra) + "%"
+
+					// Monta a condição usando o parâmetro
 					cond := fmt.Sprintf(`(
-						TRANSLATE(UPPER(PRO.DESCRPROD), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE '%%%s%%' OR
-						TRANSLATE(UPPER(PRO.MARCA), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE '%%%s%%'
-					)`, pUpper, pUpper)
+						TRANSLATE(UPPER(PRO.DESCRPROD), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE :%s OR
+						TRANSLATE(UPPER(PRO.MARCA), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE :%s
+					)`, paramName, paramName)
 					condicoes = append(condicoes, cond)
 				}
 				sqlBuilder.WriteString(strings.Join(condicoes, " AND "))
@@ -535,7 +576,9 @@ func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, err
 	}
 
 	sqlBuilder.WriteString(orderBy)
-	rows, err := c.executeQuery(sqlBuilder.String())
+	
+	// Passa o SQL e o mapa de parâmetros preenchido
+	rows, err := c.executeQuery(sqlBuilder.String(), params)
 	if err != nil {
 		return nil, err
 	}
@@ -575,8 +618,4 @@ func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, err
 	}
 
 	return results, nil
-}
-
-func sanitizeStringForSql(s string) string {
-	return strings.ReplaceAll(s, "'", "")
 }
