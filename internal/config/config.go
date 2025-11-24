@@ -8,26 +8,27 @@ import (
 )
 
 type Config struct {
-	ApiUrl   string
-	AppKey   string
-	Token    string
-	Username string
-	Password string
+	ApiUrl    string
+	AppKey    string
+	Token     string
+	Username  string
+	Password  string
+	JwtSecret string // Novo campo
 }
 
 func Load() (*Config, error) {
-	// Tenta carregar do arquivo .env, mas não falha se não existir (prod pode usar env vars reais)
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		ApiUrl:   os.Getenv("SANKHYA_API_URL"),
-		AppKey:   os.Getenv("SANKHYA_APPKEY"),
-		Token:    os.Getenv("SANKHYA_TOKEN"),
-		Username: os.Getenv("SANKHYA_USERNAME"),
-		Password: os.Getenv("SANKHYA_PASSWORD"),
+		ApiUrl:    os.Getenv("SANKHYA_API_URL"),
+		AppKey:    os.Getenv("SANKHYA_APPKEY"),
+		Token:     os.Getenv("SANKHYA_TOKEN"),
+		Username:  os.Getenv("SANKHYA_USERNAME"),
+		Password:  os.Getenv("SANKHYA_PASSWORD"),
+		JwtSecret: os.Getenv("JWT_SECRET"), // Carrega o segredo
 	}
 
-	if cfg.ApiUrl == "" || cfg.Username == "" {
+	if cfg.ApiUrl == "" || cfg.JwtSecret == "" {
 		return nil, fmt.Errorf("variáveis de ambiente obrigatórias não preenchidas")
 	}
 

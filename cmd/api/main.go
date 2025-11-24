@@ -2,31 +2,43 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"zenith-go/internal/config"
+	"zenith-go/internal/handler"
 	"zenith-go/internal/sankhya"
 )
 
 func main() {
-	// 1. Carregar configurações
+	// 1. Config e Dependências
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Erro ao carregar configurações: %v", err)
+		log.Fatalf("Config error: %v", err)
 	}
 
-	// 2. Inicializar o cliente do ERP
 	sankhyaClient := sankhya.NewClient(cfg)
 
-	// 3. Realizar o login inicial (Fail-fast: se falhar aqui, o app nem sobe)
-	log.Println("Iniciando autenticação com o ERP...")
+	// 2. Autenticação Inicial do Sistema (Fail-fast)
+	log.Println("Autenticando sistema no ERP...")
 	if err := sankhyaClient.Authenticate(); err != nil {
-		log.Fatalf("Erro crítico ao logar no ERP: %v", err)
+		log.Fatalf("Falha crítica no login do sistema: %v", err)
 	}
 
-	// Exemplo: Simulando uso do token
-	token, _ := sankhyaClient.GetToken()
-	log.Printf("Servidor iniciado. Token atual em memória (início): %s...", token[:15])
+	// 3. Handlers
+	authHandler := &handler.AuthHandler{
+		Client: sankhyaClient,
+		Config: cfg,
+	}
 
-	// Aqui você iniciaria seu servidor HTTP (ex: Gin, Chi ou http padrão)
-	// http.ListenAndServe(":8080", r)
-	select {} // Mantém o programa rodando para teste
+	// 4. Roteamento
+	mux := http.NewServeMux()
+	
+	// Rotas Públicas
+	mux.HandleFunc("/apiv1/login", authHandler.HandleLogin)
+	mux.HandleFunc("/apiv1/logout", authHandler.HandleLogout)
+
+	// 5. Start Server
+	log.Println("Servidor rodando na porta :8080")
+	if err := http.ListenAndServe(":8080", mux); err != nil {
+		log.Fatalf("Erro no servidor: %v", err)
+	}
 }
