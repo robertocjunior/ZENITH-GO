@@ -10,8 +10,9 @@ import (
 )
 
 type AuthHandler struct {
-	Client *sankhya.Client
-	Config *config.Config
+	Client  *sankhya.Client
+	Config  *config.Config
+	Session *auth.SessionManager // Novo campo
 }
 
 type loginInput struct {
@@ -32,7 +33,6 @@ type loginOutput struct {
 	DeviceToken  string `json:"deviceToken"`
 }
 
-// HandleLogin processa todo o fluxo de autenticação
 func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
@@ -45,20 +45,17 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Gerenciamento de Device Token (UUID Novo ou Existente)
 	finalDeviceToken := input.DeviceToken
 	if finalDeviceToken == "" {
 		finalDeviceToken = auth.NewDeviceToken()
 	}
 
-	// 2. Verificar Acesso do Usuário (Existe? Tem Permissão?)
-	// Retorna o CODUSU necessário para os próximos passos
 	codUsuFloat, err := h.Client.VerifyUserAccess(input.Username)
 	if err != nil {
 		if errors.Is(err, sankhya.ErrUserNotFound) {
-			http.Error(w, err.Error(), http.StatusNotFound) // 404
+			http.Error(w, err.Error(), http.StatusNotFound)
 		} else if errors.Is(err, sankhya.ErrUserNotAuthorized) {
-			http.Error(w, err.Error(), http.StatusForbidden) // 403
+			http.Error(w, err.Error(), http.StatusForbidden)
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
@@ -66,7 +63,6 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	codUsu := int(codUsuFloat)
 
-	// 3. Verificar Liberação do Dispositivo
 	if err := h.Client.VerifyDevice(codUsu, finalDeviceToken); err != nil {
 		if errors.Is(err, sankhya.ErrDevicePendingApproval) {
 			w.Header().Set("Content-Type", "application/json")
@@ -81,19 +77,22 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Login Efetivo no Sankhya (Validação de Senha)
 	snkJSession, err := h.Client.LoginUser(input.Username, input.Password)
 	if err != nil {
 		http.Error(w, "Credenciais inválidas", http.StatusUnauthorized)
 		return
 	}
 
-	// 5. Gera o token JWT da API incluindo o CODUSU no payload
+	// Gera Token
 	jwtToken, err := auth.GenerateToken(input.Username, codUsu, h.Config.JwtSecret)
 	if err != nil {
 		http.Error(w, "Erro ao gerar sessão", http.StatusInternalServerError)
 		return
 	}
+
+	// --- REGISTRA A SESSÃO NA MEMÓRIA ---
+	h.Session.Register(jwtToken)
+	// ------------------------------------
 
 	response := loginOutput{
 		Username:     input.Username,
@@ -119,13 +118,14 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- REVOGA A SESSÃO DA MEMÓRIA ---
+	h.Session.Revoke(input.SessionToken)
+	// ----------------------------------
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
 
-// HandleGetPermissions busca permissões usando o CODUSU extraído do Token
-// Rota: POST /apiv1/permissions
-// Body: { "sessionToken": "..." }
 func (h *AuthHandler) HandleGetPermissions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método não permitido (use POST com sessionToken)", http.StatusMethodNotAllowed)
@@ -138,14 +138,20 @@ func (h *AuthHandler) HandleGetPermissions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// 1. Valida o token e extrai o CODUSU (Segurança)
+	// 1. Validação JWT (Assinatura)
 	codUsu, err := auth.ValidateToken(input.SessionToken, h.Config.JwtSecret)
 	if err != nil {
-		http.Error(w, "Sessão inválida ou expirada: "+err.Error(), http.StatusUnauthorized)
+		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	// 2. Busca permissões no ERP usando o ID confiável do token
+	// 2. Validação de Sessão (Tempo e Reinício)
+	// Verifica se está na memória e se não passou de 50min
+	if err := h.Session.ValidateAndUpdate(input.SessionToken); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
 	permissions, err := h.Client.GetUserPermissions(codUsu)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

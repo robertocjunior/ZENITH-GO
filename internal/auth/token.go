@@ -7,12 +7,12 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// GenerateToken cria um JWT contendo username e codusu
+// GenerateToken cria um JWT. Validade longa (24h) pois o controle real é feito pelo SessionManager em memória.
 func GenerateToken(username string, codUsu int, secret string) (string, error) {
 	claims := jwt.MapClaims{
 		"username": username,
 		"codusu":   codUsu,
-		"exp":      time.Now().Add(50 * time.Minute).Unix(),
+		"exp":      time.Now().Add(24 * time.Hour).Unix(), // Expiração técnica longa
 		"iat":      time.Now().Unix(),
 	}
 
@@ -23,7 +23,6 @@ func GenerateToken(username string, codUsu int, secret string) (string, error) {
 // ValidateToken verifica a assinatura e retorna o CODUSU se válido
 func ValidateToken(tokenString string, secret string) (int, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		// Valida o método de assinatura
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("método de assinatura inesperado: %v", token.Header["alg"])
 		}
@@ -35,7 +34,6 @@ func ValidateToken(tokenString string, secret string) (int, error) {
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		// Extrai o codusu (JSON numbers vêm como float64)
 		codUsuFloat, ok := claims["codusu"].(float64)
 		if !ok {
 			return 0, fmt.Errorf("codusu não encontrado no token")

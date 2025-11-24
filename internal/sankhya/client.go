@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,17 +81,17 @@ type datasetSaveResponse struct {
 	Status string `json:"status"`
 }
 
-// --- Structs de Permissões (ATUALIZADO) ---
-// As tags JSON agora refletem os nomes exatos das colunas do Sankhya
+// --- Structs de Permissões ---
 type UserPermissions struct {
-	CodUsu   int    `json:"CODUSU"`
-	ListaArm string `json:"LISTA_ARM"`
-	Transf   bool   `json:"TRANSF"`
-	Baixa    bool   `json:"BAIXA"`
-	Pick     bool   `json:"PICK"`
-	Corre    bool   `json:"CORRE"`
-	BxaPick  bool   `json:"BXAPICK"`
-	CriaPick bool   `json:"CRIAPICK"`
+	CodUsu       int    `json:"CODUSU"`
+	ListaCodigos string `json:"LISTA_CODIGOS"`
+	ListaNomes   string `json:"LISTA_NOMES"`
+	Transf       bool   `json:"TRANSF"`
+	Baixa        bool   `json:"BAIXA"`
+	Pick         bool   `json:"PICK"`
+	Corre        bool   `json:"CORRE"`
+	BxaPick      bool   `json:"BXAPICK"`
+	CriaPick     bool   `json:"CRIAPICK"`
 }
 
 // Client estrutura principal
@@ -169,13 +170,49 @@ func (c *Client) GetToken() (string, error) {
 	return c.bearerToken, nil
 }
 
-// VerifyUserAccess valida permissão básica do usuário
-func (c *Client) VerifyUserAccess(username string) (float64, error) {
+// executeQuery é um helper privado para rodar SQLs
+func (c *Client) executeQuery(sql string) ([][]any, error) {
 	sysToken, err := c.GetToken()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
+	reqBody := dbExplorerRequest{
+		ServiceName: "DbExplorerSP.executeQuery",
+	}
+	reqBody.RequestBody.SQL = sql
+	reqBody.RequestBody.Params = make(map[string]any)
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json", c.cfg.ApiUrl)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+sysToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result dbExplorerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("erro decodificando query: %w", err)
+	}
+
+	return result.ResponseBody.Rows, nil
+}
+
+// VerifyUserAccess valida permissão básica do usuário
+func (c *Client) VerifyUserAccess(username string) (float64, error) {
 	sqlQuery := fmt.Sprintf(`
 		SELECT 
 			U.CODUSU, 
@@ -186,42 +223,16 @@ func (c *Client) VerifyUserAccess(username string) (float64, error) {
 		FROM TSIUSU U 
 		WHERE U.NOMEUSU = '%s'`, strings.ToUpper(username))
 
-	reqBody := dbExplorerRequest{
-		ServiceName: "DbExplorerSP.executeQuery",
-	}
-	reqBody.RequestBody.SQL = sqlQuery
-	reqBody.RequestBody.Params = make(map[string]any)
-
-	jsonData, err := json.Marshal(reqBody)
+	rows, err := c.executeQuery(sqlQuery)
 	if err != nil {
 		return 0, err
 	}
 
-	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json", c.cfg.ApiUrl)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return 0, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+sysToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	var result dbExplorerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("erro no json dbexplorer: %w", err)
-	}
-
-	if len(result.ResponseBody.Rows) == 0 {
+	if len(rows) == 0 {
 		return 0, ErrUserNotFound
 	}
 
-	row := result.ResponseBody.Rows[0]
+	row := rows[0]
 	codUsu := row[0].(float64)
 	permitido := row[1].(string)
 
@@ -232,74 +243,41 @@ func (c *Client) VerifyUserAccess(username string) (float64, error) {
 	return codUsu, nil
 }
 
-// VerifyDevice verifica se o device está autorizado ou registra se não existir
+// VerifyDevice verifica se o device está autorizado
 func (c *Client) VerifyDevice(codUsu int, deviceToken string) error {
-	sysToken, err := c.GetToken()
-	if err != nil {
-		return err
-	}
-
 	sqlQuery := fmt.Sprintf(`
 		SELECT DEVICETOKEN, CODUSU, ATIVO 
 		FROM AD_DISPAUT 
 		WHERE CODUSU = %d AND DEVICETOKEN = '%s'`, codUsu, deviceToken)
 
-	reqBody := dbExplorerRequest{
-		ServiceName: "DbExplorerSP.executeQuery",
-	}
-	reqBody.RequestBody.SQL = sqlQuery
-	reqBody.RequestBody.Params = make(map[string]any)
-
-	jsonData, err := json.Marshal(reqBody)
+	rows, err := c.executeQuery(sqlQuery)
 	if err != nil {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json", c.cfg.ApiUrl)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+sysToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var result dbExplorerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("erro json device check: %w", err)
-	}
-
-	if len(result.ResponseBody.Rows) == 0 {
+	if len(rows) == 0 {
+		sysToken, _ := c.GetToken()
 		if regErr := c.registerDevice(sysToken, codUsu, deviceToken); regErr != nil {
 			return fmt.Errorf("erro ao registrar novo device: %w", regErr)
 		}
 		return ErrDevicePendingApproval
 	}
 
-	row := result.ResponseBody.Rows[0]
-	ativo := row[2].(string)
-
+	ativo := rows[0][2].(string)
 	if ativo == "S" {
 		return nil
 	}
-
 	return ErrDevicePendingApproval
 }
 
 func (c *Client) registerDevice(token string, codUsu int, deviceToken string) error {
 	dhGer := time.Now().Format("02/01/2006")
-
 	reqBody := datasetSaveRequest{
 		ServiceName: "DatasetSP.save",
 	}
 	reqBody.RequestBody.EntityName = "AD_DISPAUT"
 	reqBody.RequestBody.Fields = []string{"CODUSU", "DEVICETOKEN", "DESCRDISP", "ATIVO", "DHGER"}
-	
+
 	record := datasetRecord{
 		Values: map[string]string{
 			"0": strconv.Itoa(codUsu),
@@ -310,11 +288,7 @@ func (c *Client) registerDevice(token string, codUsu int, deviceToken string) er
 		},
 	}
 	reqBody.RequestBody.Records = []datasetRecord{record}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return err
-	}
+	jsonData, _ := json.Marshal(reqBody)
 
 	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DatasetSP.save&outputType=json", c.cfg.ApiUrl)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
@@ -331,125 +305,66 @@ func (c *Client) registerDevice(token string, codUsu int, deviceToken string) er
 	defer resp.Body.Close()
 
 	var result datasetSaveResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("erro decode save device: %w", err)
-	}
-
+	json.NewDecoder(resp.Body).Decode(&result)
 	if result.Status != "1" {
-		return fmt.Errorf("erro ao salvar device no ERP (status %s)", result.Status)
+		return fmt.Errorf("status erro ao salvar device")
 	}
-
 	return nil
 }
 
-// GetUserPermissions busca as permissões detalhadas do usuário
 func (c *Client) GetUserPermissions(codUsu int) (*UserPermissions, error) {
-	sysToken, err := c.GetToken()
-	if err != nil {
-		return nil, err
-	}
-
 	sqlQuery := fmt.Sprintf(`
 		SELECT 
-			LISTAGG(d.CODARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_ARM, 
-			p.CODUSU, 
-			p.TRANSF, 
-			p.BAIXA, 
-			p.PICK, 
-			p.CORRE, 
-			p.BXAPICK, 
-			p.CRIAPICK 
+			LISTAGG(d.CODARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_CODIGOS, 
+			LISTAGG(d.CODARM || ' - ' || a.DESARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_NOMES, 
+			p.CODUSU, p.TRANSF, p.BAIXA, p.PICK, p.CORRE, p.BXAPICK, p.CRIAPICK 
 		FROM AD_APPPERM p 
 		JOIN AD_PERMEND d ON d.NUMREG = p.NUMREG 
+		JOIN AD_CADARM a ON a.CODARM = d.CODARM 
 		WHERE p.CODUSU = %d 
 		GROUP BY p.CODUSU, p.TRANSF, p.BAIXA, p.PICK, p.CORRE, p.BXAPICK, p.CRIAPICK`, codUsu)
 
-	reqBody := dbExplorerRequest{
-		ServiceName: "DbExplorerSP.executeQuery",
-	}
-	reqBody.RequestBody.SQL = sqlQuery
-	reqBody.RequestBody.Params = make(map[string]any)
-
-	jsonData, err := json.Marshal(reqBody)
+	rows, err := c.executeQuery(sqlQuery)
 	if err != nil {
 		return nil, err
 	}
-
-	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json", c.cfg.ApiUrl)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, err
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("permissões não encontradas")
 	}
 
-	req.Header.Set("Authorization", "Bearer "+sysToken)
-	req.Header.Set("Content-Type", "application/json")
+	row := rows[0]
+	toBool := func(val any) bool { return val.(string) == "S" }
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var result dbExplorerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("erro ao buscar permissões: %w", err)
-	}
-
-	if len(result.ResponseBody.Rows) == 0 {
-		return nil, fmt.Errorf("nenhuma permissão encontrada para codusu %d", codUsu)
-	}
-
-	row := result.ResponseBody.Rows[0]
-	
-	// Função auxiliar para converter "S"/"N" em bool
-	toBool := func(val any) bool {
-		s, ok := val.(string)
-		if !ok {
-			return false
-		}
-		return s == "S"
-	}
-
-	// Mapeamento dos campos (Agora com chaves JSON iguais ao banco)
-	perms := &UserPermissions{
-		ListaArm: fmt.Sprintf("%v", row[0]), // LISTA_ARM
-		CodUsu:   int(row[1].(float64)),     // CODUSU
-		Transf:   toBool(row[2]),            // TRANSF
-		Baixa:    toBool(row[3]),            // BAIXA
-		Pick:     toBool(row[4]),            // PICK
-		Corre:    toBool(row[5]),            // CORRE
-		BxaPick:  toBool(row[6]),            // BXAPICK
-		CriaPick: toBool(row[7]),            // CRIAPICK
-	}
-
-	return perms, nil
+	return &UserPermissions{
+		ListaCodigos: fmt.Sprintf("%v", row[0]),
+		ListaNomes:   fmt.Sprintf("%v", row[1]),
+		CodUsu:       int(row[2].(float64)),
+		Transf:       toBool(row[3]),
+		Baixa:        toBool(row[4]),
+		Pick:         toBool(row[5]),
+		Corre:        toBool(row[6]),
+		BxaPick:      toBool(row[7]),
+		CriaPick:     toBool(row[8]),
+	}, nil
 }
 
-// LoginUser realiza login final
 func (c *Client) LoginUser(username, password string) (string, error) {
 	sysToken, err := c.GetToken()
 	if err != nil {
-		return "", fmt.Errorf("erro sistema: %w", err)
+		return "", err
 	}
 
-	reqBody := mobileLoginRequest{
-		ServiceName: "MobileLoginSP.login",
-	}
+	reqBody := mobileLoginRequest{ServiceName: "MobileLoginSP.login"}
 	reqBody.RequestBody.NomUsu.Value = username
 	reqBody.RequestBody.Interno.Value = password
 	reqBody.RequestBody.KeepConnected.Value = "S"
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
+	jsonData, _ := json.Marshal(reqBody)
 
 	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=MobileLoginSP.login&outputType=json", c.cfg.ApiUrl)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
 	}
-
 	req.Header.Set("Authorization", "Bearer "+sysToken)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -459,18 +374,86 @@ func (c *Client) LoginUser(username, password string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status http erro: %d", resp.StatusCode)
-	}
-
 	var result mobileLoginResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
+	json.NewDecoder(resp.Body).Decode(&result)
 	if result.Status != "1" {
 		return "", fmt.Errorf("credenciais inválidas")
 	}
-
 	return result.ResponseBody.JSessionID.Value, nil
+}
+
+// SearchItems busca itens no armazém (Otimizada)
+func (c *Client) SearchItems(codArm int, filtro string) ([][]any, error) {
+	var sqlBuilder strings.Builder
+
+	// OTIMIZAÇÃO: Substituição da subquery correlacionada por LEFT JOIN
+	// OTIMIZAÇÃO: Uso de /*+ ALL_ROWS */ para indicar ao Oracle que queremos o set completo rapidamente
+	sqlBuilder.WriteString(fmt.Sprintf(`
+		SELECT /*+ ALL_ROWS */
+			ENDE.SEQEND, 
+			ENDE.CODRUA, 
+			ENDE.CODPRD, 
+			ENDE.CODAPT, 
+			ENDE.CODPROD, 
+			PRO.DESCRPROD, 
+			PRO.MARCA, 
+			ENDE.DATVAL, 
+			ENDE.QTDPRO, 
+			ENDE.ENDPIC, 
+			TO_CHAR(ENDE.QTDPRO) || ' ' || ENDE.CODVOL AS QTD_COMPLETA, 
+			VOA.DERIVACAO
+		FROM AD_CADEND ENDE 
+		JOIN TGFPRO PRO ON PRO.CODPROD = ENDE.CODPROD
+		LEFT JOIN (
+			SELECT CODPROD, CODVOL, MAX(DESCRDANFE) AS DERIVACAO 
+			FROM TGFVOA 
+			GROUP BY CODPROD, CODVOL
+		) VOA ON VOA.CODPROD = ENDE.CODPROD AND VOA.CODVOL = ENDE.CODVOL
+		WHERE ENDE.CODARM = %d`, codArm))
+
+	orderBy := " ORDER BY ENDE.ENDPIC DESC, ENDE.DATVAL ASC"
+
+	if filtro != "" {
+		filtroLimpo := strings.TrimSpace(filtro)
+		isNumeric := regexp.MustCompile(`^\d+$`).MatchString(filtroLimpo)
+
+		if isNumeric {
+			filtroNum := sanitizeStringForSql(filtroLimpo)
+			// Otimização: Acesso direto por ROWNUM 1 para subquery de verificação
+			sqlBuilder.WriteString(fmt.Sprintf(` 
+				AND (
+					ENDE.SEQEND LIKE '%s%%' 
+					OR ENDE.CODPROD = %s 
+					OR ENDE.CODPROD = (
+						SELECT CODPROD FROM AD_CADEND 
+						WHERE SEQEND = %s AND CODARM = %d AND ROWNUM = 1
+					)
+				)`, filtroNum, filtroNum, filtroNum, codArm))
+			
+			orderBy = fmt.Sprintf(` ORDER BY CASE WHEN ENDE.SEQEND = %s THEN 0 ELSE 1 END, ENDE.ENDPIC DESC, ENDE.DATVAL ASC`, filtroNum)
+		} else {
+			palavrasChave := strings.Fields(filtroLimpo)
+			if len(palavrasChave) > 0 {
+				sqlBuilder.WriteString(" AND ")
+				var condicoes []string
+				for _, palavra := range palavrasChave {
+					pUpper := sanitizeStringForSql(strings.ToUpper(palavra))
+					// Mantém TRANSLATE para case/accent insensitive, inevitável sem index dedicado
+					cond := fmt.Sprintf(`(
+						TRANSLATE(UPPER(PRO.DESCRPROD), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE '%%%s%%' OR
+						TRANSLATE(UPPER(PRO.MARCA), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE '%%%s%%'
+					)`, pUpper, pUpper)
+					condicoes = append(condicoes, cond)
+				}
+				sqlBuilder.WriteString(strings.Join(condicoes, " AND "))
+			}
+		}
+	}
+
+	sqlBuilder.WriteString(orderBy)
+	return c.executeQuery(sqlBuilder.String())
+}
+
+func sanitizeStringForSql(s string) string {
+	return strings.ReplaceAll(s, "'", "")
 }
