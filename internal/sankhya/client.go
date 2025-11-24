@@ -3,6 +3,7 @@ package sankhya
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,12 +12,19 @@ import (
 	"zenith-go/internal/config"
 )
 
-// --- Structs de Login (Mantidos) ---
+// --- Definição de Erros Públicos (Exportados) ---
+var (
+	ErrUserNotFound      = errors.New("usuário inexistente ou nome incorreto")
+	ErrUserNotAuthorized = errors.New("usuário não possui autorização de acesso (AD_APPPERM)")
+)
+
+// --- Structs de Login do Sistema ---
 type loginResponse struct {
 	BearerToken string `json:"bearerToken"`
 	Error       any    `json:"error"`
 }
 
+// --- Structs de Login Mobile ---
 type simpleValue struct {
 	Value string `json:"$"`
 }
@@ -37,7 +45,7 @@ type mobileLoginResponse struct {
 	} `json:"responseBody"`
 }
 
-// --- NOVAS Structs para DbExplorerSP ---
+// --- Structs DbExplorerSP (Consulta SQL) ---
 type dbExplorerRequest struct {
 	ServiceName string `json:"serviceName"`
 	RequestBody struct {
@@ -49,7 +57,6 @@ type dbExplorerRequest struct {
 type dbExplorerResponse struct {
 	Status       string `json:"status"`
 	ResponseBody struct {
-		// Rows é uma matriz de qualquer coisa (pois o SQL pode retornar string, int, date...)
 		Rows [][]any `json:"rows"`
 	} `json:"responseBody"`
 }
@@ -71,7 +78,7 @@ func NewClient(cfg *config.Config) *Client {
 	}
 }
 
-// Authenticate realiza o login do SISTEMA e armazena o token
+// Authenticate realiza o login do SISTEMA (AppKey/Token)
 func (c *Client) Authenticate() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -106,6 +113,7 @@ func (c *Client) Authenticate() error {
 		return fmt.Errorf("token não retornado pelo ERP")
 	}
 
+	// Armazena o token e define expiração para 4m50s
 	c.bearerToken = result.BearerToken
 	c.tokenExpiry = time.Now().Add(4*time.Minute + 50*time.Second)
 
@@ -132,17 +140,16 @@ func (c *Client) GetToken() (string, error) {
 	return c.bearerToken, nil
 }
 
-// VerifyUserAccess verifica se o usuário existe e se tem permissão (OTIMIZADO)
-// Retorna: CodUsu (float64/int), Error
+// VerifyUserAccess verifica existência e permissão em UMA ÚNICA CONSULTA
 func (c *Client) VerifyUserAccess(username string) (float64, error) {
 	sysToken, err := c.GetToken()
 	if err != nil {
 		return 0, err
 	}
 
-	// SQL OTIMIZADO: Busca o código E verifica a permissão em uma única ida ao banco.
-	// Se PERMITIDO voltar 'TRUE', ok. Se 'FALSE', bloqueia.
-	// Se não voltar linha nenhuma, usuário não existe.
+	// SQL OTIMIZADO:
+	// 1. Busca CODUSU
+	// 2. Cria coluna 'PERMITIDO' (TRUE/FALSE) verificando AD_APPPERM
 	sqlQuery := fmt.Sprintf(`
 		SELECT 
 			U.CODUSU, 
@@ -188,25 +195,28 @@ func (c *Client) VerifyUserAccess(username string) (float64, error) {
 		return 0, fmt.Errorf("erro na consulta SQL (Status %s)", result.Status)
 	}
 
-	// Validação 1: Usuário existe?
+	// --- Lógica de Diferenciação de Erros ---
+
+	// CASO 1: Usuário Inexistente (Nenhuma linha retornada)
 	if len(result.ResponseBody.Rows) == 0 {
-		return 0, fmt.Errorf("usuário '%s' não encontrado ou nome incorreto", username)
+		return 0, ErrUserNotFound
 	}
 
-	// O Sankhya retorna números como float64 no JSON genérico
+	// Sankhya retorna números como float64 na interface genérica
 	row := result.ResponseBody.Rows[0]
-	codUsu := row[0].(float64) 
+	codUsu := row[0].(float64)
 	permitido := row[1].(string)
 
-	// Validação 2: Tem permissão?
+	// CASO 2: Usuário Existe, mas sem Permissão (Coluna PERMITIDO == FALSE)
 	if permitido != "TRUE" {
-		return 0, fmt.Errorf("usuário '%s' não possui permissão de acesso ao app", username)
+		return 0, ErrUserNotAuthorized
 	}
 
+	// CASO 3: Sucesso
 	return codUsu, nil
 }
 
-// LoginUser realiza o login do usuário final
+// LoginUser realiza o login do usuário final na API do Sankhya
 func (c *Client) LoginUser(username, password string) (string, error) {
 	sysToken, err := c.GetToken()
 	if err != nil {
