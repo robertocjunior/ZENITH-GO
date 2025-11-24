@@ -19,6 +19,7 @@ var (
 	ErrUserNotFound          = errors.New("usuário inexistente ou nome incorreto")
 	ErrUserNotAuthorized     = errors.New("usuário não possui autorização de acesso (AD_APPPERM)")
 	ErrDevicePendingApproval = errors.New("dispositivo não autorizado. Solicite a liberação ao administrador")
+	ErrItemNotFound          = errors.New("item não encontrado")
 )
 
 // --- Structs de Login ---
@@ -108,6 +109,22 @@ type ItemDetail struct {
 	QtdPro      float64 `json:"qtdPro"`
 	EndPic      string  `json:"endPic"`
 	NumDoc      int     `json:"numDoc"`
+	QtdCompleta string  `json:"qtdCompleta"`
+	Derivacao   string  `json:"derivacao"`
+}
+
+// SearchItemResult define o formato padronizado da resposta de busca
+type SearchItemResult struct {
+	SeqEnd      int     `json:"seqEnd"`
+	CodRua      string  `json:"codRua"`
+	CodPrd      int     `json:"codPrd"`
+	CodApt      string  `json:"codApt"`
+	CodProd     int     `json:"codProd"`
+	DescrProd   string  `json:"descrProd"`
+	Marca       string  `json:"marca"`
+	DatVal      string  `json:"datVal"`
+	QtdPro      float64 `json:"qtdPro"`
+	EndPic      string  `json:"endPic"`
 	QtdCompleta string  `json:"qtdCompleta"`
 	Derivacao   string  `json:"derivacao"`
 }
@@ -400,8 +417,8 @@ func (c *Client) LoginUser(username, password string) (string, error) {
 	return result.ResponseBody.JSessionID.Value, nil
 }
 
-// GetItemDetails busca detalhes de um item e retorna padronizado
-func (c *Client) GetItemDetails(codArm int, sequencia string) ([]ItemDetail, error) {
+// GetItemDetails busca detalhes de um item e retorna UM único objeto
+func (c *Client) GetItemDetails(codArm int, sequencia string) (*ItemDetail, error) {
 	seqSanitized := sanitizeStringForSql(sequencia)
 	sql := fmt.Sprintf(`SELECT * FROM V_WMS_ITEM_DETALHES WHERE CODARM = %d AND SEQEND = '%s'`, codArm, seqSanitized)
 	
@@ -410,51 +427,53 @@ func (c *Client) GetItemDetails(codArm int, sequencia string) ([]ItemDetail, err
 		return nil, err
 	}
 
-	var details []ItemDetail
-	for _, row := range rows {
-		// Funções auxiliares para extração segura (evita panic em nulls)
-		getInt := func(i int) int {
-			if i >= len(row) || row[i] == nil { return 0 }
-			if f, ok := row[i].(float64); ok { return int(f) }
-			return 0
-		}
-		getFloat := func(i int) float64 {
-			if i >= len(row) || row[i] == nil { return 0 }
-			if f, ok := row[i].(float64); ok { return f }
-			return 0
-		}
-		getString := func(i int) string {
-			if i >= len(row) || row[i] == nil { return "" }
-			return fmt.Sprintf("%v", row[i])
-		}
-
-		details = append(details, ItemDetail{
-			CodArm:      getInt(0),
-			SeqEnd:      getInt(1),
-			CodRua:      getString(2),
-			CodPrd:      getInt(3),
-			CodApt:      getString(4),
-			CodProd:     getInt(5),
-			DescrProd:   getString(6),
-			Marca:       getString(7),
-			DatVal:      getString(8),
-			QtdPro:      getFloat(9),
-			EndPic:      getString(10),
-			NumDoc:      getInt(11),
-			QtdCompleta: getString(12),
-			Derivacao:   getString(13),
-		})
+	if len(rows) == 0 {
+		return nil, ErrItemNotFound
 	}
 
-	return details, nil
+	// Pega apenas o primeiro registro
+	row := rows[0]
+
+	// Funções auxiliares para extração segura
+	getInt := func(i int) int {
+		if i >= len(row) || row[i] == nil { return 0 }
+		if f, ok := row[i].(float64); ok { return int(f) }
+		return 0
+	}
+	getFloat := func(i int) float64 {
+		if i >= len(row) || row[i] == nil { return 0 }
+		if f, ok := row[i].(float64); ok { return f }
+		return 0
+	}
+	getString := func(i int) string {
+		if i >= len(row) || row[i] == nil { return "" }
+		return fmt.Sprintf("%v", row[i])
+	}
+
+	item := &ItemDetail{
+		CodArm:      getInt(0),
+		SeqEnd:      getInt(1),
+		CodRua:      getString(2),
+		CodPrd:      getInt(3),
+		CodApt:      getString(4),
+		CodProd:     getInt(5),
+		DescrProd:   getString(6),
+		Marca:       getString(7),
+		DatVal:      getString(8),
+		QtdPro:      getFloat(9),
+		EndPic:      getString(10),
+		NumDoc:      getInt(11),
+		QtdCompleta: getString(12),
+		Derivacao:   getString(13),
+	}
+
+	return item, nil
 }
 
-// SearchItems busca itens no armazém (Otimizada)
-func (c *Client) SearchItems(codArm int, filtro string) ([][]any, error) {
+// SearchItems busca itens no armazém (Otimizada) e retorna objetos padronizados
+func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, error) {
 	var sqlBuilder strings.Builder
 
-	// OTIMIZAÇÃO: Substituição da subquery correlacionada por LEFT JOIN
-	// OTIMIZAÇÃO: Uso de /*+ ALL_ROWS */ para indicar ao Oracle que queremos o set completo rapidamente
 	sqlBuilder.WriteString(fmt.Sprintf(`
 		SELECT /*+ ALL_ROWS */
 			ENDE.SEQEND, 
@@ -486,7 +505,6 @@ func (c *Client) SearchItems(codArm int, filtro string) ([][]any, error) {
 
 		if isNumeric {
 			filtroNum := sanitizeStringForSql(filtroLimpo)
-			// Otimização: Acesso direto por ROWNUM 1 para subquery de verificação
 			sqlBuilder.WriteString(fmt.Sprintf(` 
 				AND (
 					ENDE.SEQEND LIKE '%s%%' 
@@ -505,7 +523,6 @@ func (c *Client) SearchItems(codArm int, filtro string) ([][]any, error) {
 				var condicoes []string
 				for _, palavra := range palavrasChave {
 					pUpper := sanitizeStringForSql(strings.ToUpper(palavra))
-					// Mantém TRANSLATE para case/accent insensitive, inevitável sem index dedicado
 					cond := fmt.Sprintf(`(
 						TRANSLATE(UPPER(PRO.DESCRPROD), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE '%%%s%%' OR
 						TRANSLATE(UPPER(PRO.MARCA), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE '%%%s%%'
@@ -518,7 +535,46 @@ func (c *Client) SearchItems(codArm int, filtro string) ([][]any, error) {
 	}
 
 	sqlBuilder.WriteString(orderBy)
-	return c.executeQuery(sqlBuilder.String())
+	rows, err := c.executeQuery(sqlBuilder.String())
+	if err != nil {
+		return nil, err
+	}
+
+	var results []SearchItemResult
+	for _, row := range rows {
+		// Helpers para conversão segura
+		getInt := func(i int) int {
+			if i >= len(row) || row[i] == nil { return 0 }
+			if f, ok := row[i].(float64); ok { return int(f) }
+			return 0
+		}
+		getFloat := func(i int) float64 {
+			if i >= len(row) || row[i] == nil { return 0 }
+			if f, ok := row[i].(float64); ok { return f }
+			return 0
+		}
+		getString := func(i int) string {
+			if i >= len(row) || row[i] == nil { return "" }
+			return fmt.Sprintf("%v", row[i])
+		}
+
+		results = append(results, SearchItemResult{
+			SeqEnd:      getInt(0),
+			CodRua:      getString(1),
+			CodPrd:      getInt(2),
+			CodApt:      getString(3),
+			CodProd:     getInt(4),
+			DescrProd:   getString(5),
+			Marca:       getString(6),
+			DatVal:      getString(7),
+			QtdPro:      getFloat(8),
+			EndPic:      getString(9),
+			QtdCompleta: getString(10),
+			Derivacao:   getString(11),
+		})
+	}
+
+	return results, nil
 }
 
 func sanitizeStringForSql(s string) string {

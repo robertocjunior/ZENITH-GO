@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
@@ -62,7 +63,7 @@ func (h *ProductHandler) HandleSearchItems(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(rows)
 }
 
-// HandleGetItemDetails busca detalhes específicos de um item (View V_WMS_ITEM_DETALHES)
+// HandleGetItemDetails busca detalhes específicos de um item (Retorna Objeto Único)
 func (h *ProductHandler) HandleGetItemDetails(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
@@ -87,13 +88,17 @@ func (h *ProductHandler) HandleGetItemDetails(w http.ResponseWriter, r *http.Req
 	}
 
 	// 2. Executa a busca no Sankhya
-	rows, err := h.Client.GetItemDetails(input.CodArm, input.Sequencia)
+	item, err := h.Client.GetItemDetails(input.CodArm, input.Sequencia)
 	if err != nil {
-		http.Error(w, "Erro na busca: "+err.Error(), http.StatusInternalServerError)
+		if errors.Is(err, sankhya.ErrItemNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else {
+			http.Error(w, "Erro na busca: "+err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
-	// 3. Retorna os dados
+	// 3. Retorna os dados (Agora é um objeto, não array)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(rows)
+	json.NewEncoder(w).Encode(item)
 }
