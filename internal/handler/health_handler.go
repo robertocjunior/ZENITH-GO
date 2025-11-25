@@ -7,20 +7,23 @@ import (
 	"runtime"
 	"time"
 	"zenith-go/internal/auth"
+	"zenith-go/internal/config"
 )
 
 type HealthHandler struct {
 	Session *auth.SessionManager
+	Config  *config.Config // Injeção de dependência
 }
 
 type HealthResponse struct {
 	NodeID         string `json:"node_id"`
 	Status         string `json:"status"`
-	UptimeSeconds  int64  `json:"uptime_seconds"` // MUDANÇA: Envia segundos puros
+	UptimeSeconds  int64  `json:"uptime_seconds"`
 	MemoryUsageMB  uint64 `json:"memory_usage_mb"`
 	Goroutines     int    `json:"goroutines"`
 	RedisStatus    string `json:"redis_status"`
 	ActiveSessions int64  `json:"active_sessions"`
+	RefreshRate    int    `json:"refresh_rate"` // Novo campo para o front
 	Timestamp      string `json:"timestamp"`
 }
 
@@ -41,12 +44,12 @@ func (h *HealthHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request
 	resp := HealthResponse{
 		NodeID:         hostname,
 		Status:         "online",
-		// Calcula segundos desde o início
-		UptimeSeconds:  int64(time.Since(startTime).Seconds()), 
+		UptimeSeconds:  int64(time.Since(startTime).Seconds()),
 		MemoryUsageMB:  m.Alloc / 1024 / 1024,
 		Goroutines:     runtime.NumGoroutine(),
 		RedisStatus:    redisStatus,
 		ActiveSessions: sessions,
+		RefreshRate:    h.Config.DashboardRefreshRate, // Envia valor do .env
 		Timestamp:      time.Now().Format(time.RFC3339),
 	}
 

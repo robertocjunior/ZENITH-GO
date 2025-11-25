@@ -6,23 +6,19 @@
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: #e0e0e0; padding: 20px; }
         h1 { color: #00add8; text-align: center; margin-bottom: 10px; }
-        
         .controls { text-align: center; margin-bottom: 30px; }
         button { background: #00add8; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 1rem; transition: background 0.3s; }
         button:hover { background: #008bb3; }
-        
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
         .card { background: #2d2d2d; padding: 20px; border-radius: 8px; border-left: 5px solid #4caf50; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: all 0.3s ease; }
         .card.offline { border-left-color: #f44336; opacity: 0.6; }
-        
         .stat { display: flex; justify-content: space-between; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; }
         .stat-label { color: #888; }
         .stat-val { font-weight: bold; }
         .redis-card { border-left-color: #ff5722; }
-        
         #total-sessions { font-size: 2.5em; text-align: center; display: block; margin: 10px 0; color: #fff; }
         .progress-bar { height: 4px; background: #444; margin-top: 20px; width: 100%; border-radius: 2px; overflow: hidden; }
-        .progress-fill { height: 100%; background: #00add8; width: 0%; transition: width 1s linear; }
+        .progress-fill { height: 100%; background: #00add8; width: 0%; transition: width 0.1s linear; }
     </style>
 </head>
 <body>
@@ -41,7 +37,7 @@
         <div class="card" style="border-left-color: #00add8;">
             <h3>Load Balancer</h3>
             <div class="stat"><span class="stat-label">Detected Nodes:</span> <span class="stat-val" id="node-count">0</span></div>
-            <div class="stat"><span class="stat-label">Auto-Refresh:</span> <span class="stat-val">Every 5s</span></div>
+            <div class="stat"><span class="stat-label">Auto-Refresh:</span> <span class="stat-val" id="refresh-display">Loading...</span></div>
             <div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
         </div>
     </div>
@@ -51,36 +47,40 @@
 
     <script>
         const nodes = {}; 
-        const REFRESH_INTERVAL = 5000; // 5 segundos
+        let refreshIntervalMs = 60000; // Começa com 60s (padrão seguro) até receber o config real
         let timer = 0;
+        let firstLoad = true;
 
-        // Formata segundos para "1d 2h 30m"
         function formatUptime(seconds) {
             const d = Math.floor(seconds / (3600*24));
             const h = Math.floor(seconds % (3600*24) / 3600);
             const m = Math.floor(seconds % 3600 / 60);
-            
             let parts = [];
             if (d > 0) parts.push(`${d}d`);
             if (h > 0) parts.push(`${h}h`);
             parts.push(`${m}m`);
-            
-            return parts.join(' ');
+            return parts.join(' ') || '0m';
         }
 
         async function fetchStats() {
             try {
-                // Tenta bater na API. O Nginx vai jogar para um dos nós.
-                // Como queremos descobrir todos, em um cenário real de produção,
-                // ferramentas como Prometheus são ideais. 
-                // Aqui, fazemos um "burst" de 3 chamadas rápidas para tentar pegar nós diferentes no Round-Robin.
+                // Faz múltiplas chamadas rápidas (burst) para tentar atingir diferentes nós do Round-Robin
                 for(let i=0; i<3; i++) {
                     const res = await fetch('/apiv1/health');
                     if(res.ok) {
                         const data = await res.json();
                         nodes[data.node_id] = { ...data, lastSeen: Date.now() };
-                        // Atualiza sessão global (pega do último nó que respondeu)
+                        
+                        // Atualiza dados globais
                         document.getElementById('total-sessions').innerText = data.active_sessions;
+
+                        // ATUALIZA O INTERVALO COM BASE NO .ENV
+                        if (data.refresh_rate && (data.refresh_rate * 1000) !== refreshIntervalMs) {
+                            refreshIntervalMs = data.refresh_rate * 1000;
+                            document.getElementById('refresh-display').innerText = `${data.refresh_rate}s`;
+                            // Se for a primeira carga, zera o timer para sincronizar a barra
+                            if(firstLoad) { timer = 0; firstLoad = false; }
+                        }
                     }
                 }
                 renderNodes();
@@ -96,8 +96,8 @@
 
             Object.keys(nodes).sort().forEach(id => {
                 const node = nodes[id];
-                // Considera offline se não responder em 15s (3 ciclos de refresh)
-                const isLive = (Date.now() - node.lastSeen) < (REFRESH_INTERVAL * 3); 
+                // Considera offline se não responder em 3 ciclos
+                const isLive = (Date.now() - node.lastSeen) < (refreshIntervalMs * 3); 
                 if (isLive) activeCount++;
 
                 const html = `
@@ -117,23 +117,23 @@
         }
 
         function manualRefresh() {
-            timer = REFRESH_INTERVAL; // Força o timer a disparar no próximo tick visual
+            timer = refreshIntervalMs; // Força atualização imediata
             fetchStats();
         }
 
-        // Lógica da Barra de Progresso e Loop
+        // Loop de Animação e Controle (100ms)
         setInterval(() => {
             timer += 100;
-            const width = (timer / REFRESH_INTERVAL) * 100;
+            const width = Math.min((timer / refreshIntervalMs) * 100, 100);
             document.getElementById('progress').style.width = width + '%';
 
-            if (timer >= REFRESH_INTERVAL) {
+            if (timer >= refreshIntervalMs) {
                 timer = 0;
                 fetchStats();
             }
         }, 100);
 
-        // Primeira carga
+        // Carga Inicial
         fetchStats();
     </script>
 </body>

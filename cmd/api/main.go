@@ -134,8 +134,9 @@ func main() {
 	}
 
 	healthHandler := &handler.HealthHandler{
-		Session: sessionManager,
-	}
+        Session: sessionManager,
+        Config:  cfg, // Passa a config carregada
+    }
 
 	// 6. Configura Rotas
 	mux := http.NewServeMux()
