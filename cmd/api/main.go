@@ -15,7 +15,7 @@ func securityMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Snkjsessionid") // Adicionado Snkjsessionid
 
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -58,6 +58,13 @@ func main() {
 		Session: sessionManager,
 	}
 
+	// Inicializa TransactionHandler
+	transactionHandler := &handler.TransactionHandler{
+		Client:    sankhyaClient,
+		Session:   sessionManager,
+		JwtSecret: cfg.JwtSecret,
+	}
+
 	mux := http.NewServeMux()
 
 	// --- Rotas de Autenticação ---
@@ -69,7 +76,10 @@ func main() {
 	mux.HandleFunc("/apiv1/search-items", productHandler.HandleSearchItems)
 	mux.HandleFunc("/apiv1/get-item-details", productHandler.HandleGetItemDetails)
 	mux.HandleFunc("/apiv1/get-picking-locations", productHandler.HandleGetPickingLocations)
-	mux.HandleFunc("/apiv1/get-history", productHandler.HandleGetHistory) // Nova rota adicionada
+	mux.HandleFunc("/apiv1/get-history", productHandler.HandleGetHistory)
+
+	// --- Nova Rota de Transação ---
+	mux.HandleFunc("/apiv1/execute-transaction", transactionHandler.HandleExecuteTransaction)
 
 	log.Println("Servidor rodando na porta :8080")
 	if err := http.ListenAndServe(":8080", securityMiddleware(mux)); err != nil {
