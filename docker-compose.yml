@@ -6,7 +6,8 @@ services:
     build:
       # APONTA DIRETO PARA SEU REPOSITÓRIO GIT
       # Se for privado, você precisará configurar credenciais SSH no host ou usar tokens
-      context: https://github.com/robertocjunior/zenith-go.git#main
+      #context: https://github.com/robertocjunior/zenith-go.git#main
+      context: .
       dockerfile: Dockerfile
     restart: always
     ports:

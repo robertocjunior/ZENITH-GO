@@ -1,0 +1,11 @@
+{"time":"2025-11-25T16:29:37-03:00","level":"INFO","msg":"Sistema de logs inicializado","dir":"logs","max_size_mb":50,"max_age_days":0}
+{"time":"2025-11-25T16:29:37-03:00","level":"INFO","msg":"Configurações carregadas","api_url":"https://api.sandbox.sankhya.com.br"}
+{"time":"2025-11-25T16:29:37-03:00","level":"INFO","msg":"Autenticando sistema no ERP..."}
+{"time":"2025-11-25T16:29:37-03:00","level":"INFO","msg":"Autenticando Sistema (Service Account) no Sankhya..."}
+{"time":"2025-11-25T16:29:39-03:00","level":"INFO","msg":"Autenticação do sistema renovada com sucesso","expiry":"2025-11-25T16:34:29.563190508-03:00"}
+{"time":"2025-11-25T16:29:39-03:00","level":"INFO","msg":"Autenticação do sistema realizada com sucesso!"}
+{"time":"2025-11-25T16:29:39-03:00","level":"INFO","msg":"Servidor rodando","port":"8080"}
+{"time":"2025-11-25T16:30:33-03:00","level":"INFO","msg":"Tentativa de login","username":"RCASALI","ip":"172.19.0.1:54874"}
+{"time":"2025-11-25T16:30:33-03:00","level":"DEBUG","msg":"Verificando acesso do usuário","username":"RCASALI"}
+{"time":"2025-11-25T16:30:35-03:00","level":"INFO","msg":"Login realizado com sucesso","username":"RCASALI","codusu":131}
+{"time":"2025-11-25T16:30:35-03:00","level":"INFO","msg":"HTTP Request","method":"POST","path":"/apiv1/login","status":200,"duration":"1.294860171s","ip":"172.19.0.1:54874","user_agent":"PostmanRuntime/7.49.1"}

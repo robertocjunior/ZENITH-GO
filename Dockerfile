@@ -1,5 +1,5 @@
 # Estágio de Compilação (Builder)
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # ATUALIZAÇÃO DE SEGURANÇA: Atualiza pacotes do sistema base
 RUN apk upgrade --no-cache
