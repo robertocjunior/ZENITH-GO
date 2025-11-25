@@ -147,6 +147,8 @@ The API exposes the following endpoints, all prefixed with `/apiv1`.
     - **Supported Types**: `baixa`, `transferencia`, `picking`, `correcao`.
     - **Required Headers**: `Authorization` (Bearer) and `Snkjsessionid` (Sankhya Cookie).
 
+### [📚 API Reference & Examples](./docs/API_Reference_and_Examples.md)
+
 ## License
 
 This software is proprietary and confidential. Copyright © 2025 Roberto Casali Junior. All rights reserved.
