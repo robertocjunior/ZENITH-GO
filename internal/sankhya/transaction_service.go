@@ -21,7 +21,6 @@ type TransactionInput struct {
 func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName string, requestBody any, snkSessionId string) (*TransactionResponse, error) {
 	url := fmt.Sprintf("%s/service.sbr?serviceName=%s&outputType=json", c.cfg.TransactionUrl, serviceName)
 
-	// Envolve o body na estrutura padrão { "requestBody": ... } para chamadas diretas de serviço
 	fullPayload := map[string]any{
 		"requestBody": requestBody,
 	}
@@ -36,7 +35,6 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 		return nil, err
 	}
 
-	// Define o Cookie JSESSIONID e Content-Type
 	req.Header.Set("Cookie", fmt.Sprintf("JSESSIONID=%s", snkSessionId))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -51,7 +49,6 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 		return nil, fmt.Errorf("erro ao decodificar resposta da transação: %w", err)
 	}
 
-	// Status 1 = Sucesso, 2 = Sucesso com aviso
 	if result.Status != "1" && result.Status != "2" {
 		msg := result.StatusMessage
 		if msg == "" {
@@ -65,7 +62,6 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 
 // ExecuteServiceAsSystem chama um serviço Sankhya usando o Bearer Token do Sistema (ApiUrl)
 func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string, requestBody any) (*TransactionResponse, error) {
-	// Obtém o token do sistema (renova se necessário)
 	sysToken, err := c.GetToken(ctx)
 	if err != nil {
 		return nil, err
@@ -73,7 +69,6 @@ func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string,
 
 	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=%s&outputType=json", c.cfg.ApiUrl, serviceName)
 
-	// O Gateway geralmente espera que o serviceName também esteja no corpo
 	payload := ServiceRequest{
 		ServiceName: serviceName,
 		RequestBody: requestBody,
@@ -116,7 +111,6 @@ func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string,
 
 // ExecuteTransaction orquestra a lógica baseada no tipo
 func (c *Client) ExecuteTransaction(ctx context.Context, input TransactionInput, snkSessionId string) (string, error) {
-	// 1. Validação de Permissões (Usa System Token)
 	perms, err := c.GetUserPermissions(ctx, input.CodUsu)
 	if err != nil {
 		return "", fmt.Errorf("falha ao verificar permissões: %w", err)
@@ -138,7 +132,6 @@ func (c *Client) ExecuteTransaction(ctx context.Context, input TransactionInput,
 		return "", ErrPermissionDenied
 	}
 
-	// 2. Roteamento por Tipo
 	if input.Type == "correcao" {
 		return c.handleCorrecao(ctx, input, snkSessionId)
 	} else {
@@ -153,7 +146,6 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	sequencia := int(payload["sequencia"].(float64))
 	newQuantity := payload["newQuantity"].(float64)
 
-	// Busca dados do item (System Token - executeQuery)
 	sqlItem := fmt.Sprintf(`
 		SELECT 
 			DEND.CODPROD, 
@@ -173,7 +165,6 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	}
 	row := rows[0]
 
-	// Helpers de extração
 	getString := func(idx int) string {
 		if row[idx] == nil {
 			return ""
@@ -195,7 +186,6 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	marca := getString(5)
 	deriv := getString(6)
 
-	// Executa Script (ActionButtonsSP.executeScript) -> USER SESSION (Cookie)
 	scriptBody := ExecuteScriptBody{}
 	scriptBody.RunScript.ActionID = "97"
 	scriptBody.RunScript.RefreshType = "SEL"
@@ -219,8 +209,6 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 		return "", err
 	}
 
-	// Salva Histórico (DatasetSP.save) -> SYSTEM TOKEN (Bearer)
-	// CORREÇÃO: Uso de "%.0f" para garantir string inteira ("50" e não "50.0")
 	histBody := DatasetSaveBody{
 		EntityName: "AD_HISTENDAPP",
 		Fields:     []string{"CODARM", "SEQEND", "CODPROD", "CODVOL", "MARCA", "DERIV", "QUANT", "QATUAL", "CODUSU"},
@@ -232,8 +220,8 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 				"3": codVol,
 				"4": marca,
 				"5": deriv,
-				"6": fmt.Sprintf("%.0f", qtdAnt),    // Inteiro
-				"7": fmt.Sprintf("%.0f", newQuantity), // Inteiro
+				"6": fmt.Sprintf("%.0f", qtdAnt),
+				"7": fmt.Sprintf("%.0f", newQuantity),
 				"8": strconv.Itoa(input.CodUsu),
 			},
 		}},
@@ -247,8 +235,52 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	return "Correção executada com sucesso!", nil
 }
 
+// verifyPickingStatus verifica no banco se um endereço é de picking
+func (c *Client) verifyPickingStatus(ctx context.Context, codArm int, sequencia int) (bool, error) {
+	sql := fmt.Sprintf(`SELECT ENDPIC FROM AD_CADEND WHERE CODARM = %d AND SEQEND = %d`, codArm, sequencia)
+	rows, err := c.executeQuery(ctx, sql)
+	if err != nil {
+		return false, fmt.Errorf("erro ao verificar status de picking: %w", err)
+	}
+	
+	// Se não retornou linha, assume que não é picking (ou item não existe, o que falhará depois)
+	if len(rows) == 0 {
+		return false, nil
+	}
+
+	// ENDPIC é retornado como string "S" ou "N"
+	endPic := fmt.Sprintf("%v", rows[0][0])
+	return endPic == "S", nil
+}
+
 // handleMovimentacao trata Baixa, Transferência e Picking
 func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput, snkSessionId string, perms *UserPermissions) (string, error) {
+	payload := input.Payload
+
+	// --- VALIDAÇÃO DE SEGURANÇA (Server-Side) ---
+	// Extrai dados da origem para verificar se é Picking no Banco de Dados
+	var origemCodArm, origemSeq int
+	
+	// O payload["origem"] é um map[string]any vindo do JSON decode
+	if origemMap, ok := payload["origem"].(map[string]any); ok {
+		origemCodArm = int(origemMap["codarm"].(float64))
+		origemSeq = int(origemMap["sequencia"].(float64))
+	} else {
+		return "", fmt.Errorf("payload inválido: dados de origem não encontrados")
+	}
+
+	// Consulta o banco para ver se é realmente Picking
+	isPicking, err := c.verifyPickingStatus(ctx, origemCodArm, origemSeq)
+	if err != nil {
+		return "", err
+	}
+
+	// Se for Picking no banco e o usuário não tiver permissão BXAPICK -> Bloqueia
+	if isPicking && !perms.BxaPick {
+		return "", fmt.Errorf("permissão negada: você não tem permissão para movimentar/baixar itens de um endereço de Picking")
+	}
+	// ---------------------------------------------
+
 	// 1. Cria Cabeçalho (AD_BXAEND)
 	hoje := time.Now().Format("02/01/2006")
 	headerBody := DatasetSaveBody{
@@ -274,21 +306,16 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 
 	// 2. Prepara Itens (AD_IBXEND)
 	records := []DatasetRecord{}
-	payload := input.Payload
 
-	// Itens de baixa/movimentação geralmente aceitam decimais, mantemos %.3f
 	fmtQtd := func(v any) string {
 		f, _ := v.(float64)
 		return fmt.Sprintf("%.3f", f)
 	}
 
 	if input.Type == "baixa" {
+		// Validação de picking já feita acima
 		origem := payload["origem"].(map[string]any)
 		qtd := payload["quantidade"]
-
-		if origem["endpic"] == "S" && !perms.BxaPick {
-			return "", fmt.Errorf("sem permissão para baixar de picking")
-		}
 
 		records = append(records, DatasetRecord{
 			Values: map[string]string{
@@ -305,10 +332,6 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		// Transferencia ou Picking
 		origem := payload["origem"].(map[string]any)
 		destino := payload["destino"].(map[string]any)
-
-		if origem["endpic"] == "S" && !perms.BxaPick {
-			return "", fmt.Errorf("sem permissão para mover de picking")
-		}
 
 		// Verifica destino (System Token)
 		sqlDest := fmt.Sprintf("SELECT CODPROD, QTDPRO FROM AD_CADEND WHERE SEQEND = '%s' AND CODARM = %.0f",
