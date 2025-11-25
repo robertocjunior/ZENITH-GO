@@ -6,18 +6,25 @@
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: #e0e0e0; padding: 20px; }
         h1 { color: #00add8; text-align: center; margin-bottom: 10px; }
+        
         .controls { text-align: center; margin-bottom: 30px; }
         button { background: #00add8; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 1rem; transition: background 0.3s; }
         button:hover { background: #008bb3; }
+        
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
         .card { background: #2d2d2d; padding: 20px; border-radius: 8px; border-left: 5px solid #4caf50; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: all 0.3s ease; }
         .card.offline { border-left-color: #f44336; opacity: 0.6; }
+        
         .stat { display: flex; justify-content: space-between; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; }
         .stat-label { color: #888; }
         .stat-val { font-weight: bold; }
         .redis-card { border-left-color: #ff5722; }
+        
         #total-sessions { font-size: 2.5em; text-align: center; display: block; margin: 10px 0; color: #fff; }
-        .progress-bar { height: 4px; background: #444; margin-top: 20px; width: 100%; border-radius: 2px; overflow: hidden; }
+        
+        /* Barra de progresso sem texto acima */
+        .progress-container { margin-top: 20px; }
+        .progress-bar { height: 4px; background: #444; width: 100%; border-radius: 2px; overflow: hidden; }
         .progress-fill { height: 100%; background: #00add8; width: 0%; transition: width 0.1s linear; }
     </style>
 </head>
@@ -37,8 +44,9 @@
         <div class="card" style="border-left-color: #00add8;">
             <h3>Load Balancer</h3>
             <div class="stat"><span class="stat-label">Detected Nodes:</span> <span class="stat-val" id="node-count">0</span></div>
-            <div class="stat"><span class="stat-label">Auto-Refresh:</span> <span class="stat-val" id="refresh-display">Loading...</span></div>
-            <div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
+            <div class="progress-container">
+                <div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
+            </div>
         </div>
     </div>
 
@@ -47,7 +55,7 @@
 
     <script>
         const nodes = {}; 
-        let refreshIntervalMs = 60000; // Começa com 60s (padrão seguro) até receber o config real
+        let refreshIntervalMs = 60000; // Inicia com 60s
         let timer = 0;
         let firstLoad = true;
 
@@ -64,21 +72,19 @@
 
         async function fetchStats() {
             try {
-                // Faz múltiplas chamadas rápidas (burst) para tentar atingir diferentes nós do Round-Robin
+                // Burst de chamadas para atualizar todos os nós no round-robin
                 for(let i=0; i<3; i++) {
                     const res = await fetch('/apiv1/health');
                     if(res.ok) {
                         const data = await res.json();
                         nodes[data.node_id] = { ...data, lastSeen: Date.now() };
                         
-                        // Atualiza dados globais
                         document.getElementById('total-sessions').innerText = data.active_sessions;
 
-                        // ATUALIZA O INTERVALO COM BASE NO .ENV
+                        // Atualiza intervalo vindo do backend
                         if (data.refresh_rate && (data.refresh_rate * 1000) !== refreshIntervalMs) {
                             refreshIntervalMs = data.refresh_rate * 1000;
-                            document.getElementById('refresh-display').innerText = `${data.refresh_rate}s`;
-                            // Se for a primeira carga, zera o timer para sincronizar a barra
+                            // Se for primeira carga, reseta timer para sincronia visual
                             if(firstLoad) { timer = 0; firstLoad = false; }
                         }
                     }
@@ -96,7 +102,6 @@
 
             Object.keys(nodes).sort().forEach(id => {
                 const node = nodes[id];
-                // Considera offline se não responder em 3 ciclos
                 const isLive = (Date.now() - node.lastSeen) < (refreshIntervalMs * 3); 
                 if (isLive) activeCount++;
 
@@ -117,11 +122,11 @@
         }
 
         function manualRefresh() {
-            timer = refreshIntervalMs; // Força atualização imediata
+            timer = refreshIntervalMs;
             fetchStats();
         }
 
-        // Loop de Animação e Controle (100ms)
+        // Loop de controle
         setInterval(() => {
             timer += 100;
             const width = Math.min((timer / refreshIntervalMs) * 100, 100);
@@ -133,7 +138,6 @@
             }
         }, 100);
 
-        // Carga Inicial
         fetchStats();
     </script>
 </body>

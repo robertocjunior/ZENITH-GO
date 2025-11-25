@@ -28,7 +28,6 @@ func NewSessionManager(addr, password string, db int, timeoutMinutes int) (*Sess
 		DB:       db,
 	})
 
-	// Teste de conexão (Ping)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -42,11 +41,10 @@ func NewSessionManager(addr, password string, db int, timeoutMinutes int) (*Sess
 	}, nil
 }
 
-// Register salva o token no Redis com tempo de expiração
+// Register salva o token no Redis
 func (sm *SessionManager) Register(token string) error {
 	ctx := context.Background()
-	// A chave será "session:{token}". O valor é "valid" (ou poderia ser o ID do usuário).
-	// O TTL (Time To Live) é definido pelo timeout.
+	// Prefixo obrigatório "session:"
 	err := sm.client.Set(ctx, "session:"+token, "valid", sm.timeout).Err()
 	if err != nil {
 		return ErrRedisConnection
@@ -54,36 +52,42 @@ func (sm *SessionManager) Register(token string) error {
 	return nil
 }
 
-// ValidateAndUpdate verifica se a sessão existe no Redis.
-// Se existir, reinicia a contagem do tempo de expiração (Sliding Expiration).
+// ValidateAndUpdate verifica e renova
 func (sm *SessionManager) ValidateAndUpdate(token string) error {
 	ctx := context.Background()
 	key := "session:" + token
 
-	// Verifica se existe (GET)
 	_, err := sm.client.Get(ctx, key).Result()
 	if err == redis.Nil {
-		return ErrSessionExpired // Chave não existe (expirou ou nunca existiu)
+		return ErrSessionExpired
 	} else if err != nil {
 		return ErrRedisConnection
 	}
 
-	// Renova o tempo de vida (EXPIRE)
 	sm.client.Expire(ctx, key, sm.timeout)
 	return nil
 }
 
-// Revoke apaga a sessão do Redis imediatamente (Logout)
+// Revoke apaga a sessão
 func (sm *SessionManager) Revoke(token string) {
 	ctx := context.Background()
-	// Não precisamos tratar erro no logout, apenas tentar apagar
 	sm.client.Del(ctx, "session:"+token)
 }
 
-// CountActiveSessions retorna o número de chaves de sessão no Redis
+// CountActiveSessions conta APENAS chaves com prefixo 'session:*'
 func (sm *SessionManager) CountActiveSessions() (int64, error) {
 	ctx := context.Background()
-	// Usamos DBSize como aproximação rápida. 
-	// Se o DB for compartilhado, usar: sm.client.Keys(ctx, "session:*").Result() (mais lento)
-	return sm.client.DBSize(ctx).Result()
+	
+	// Usa Scan para contar chaves com o prefixo correto de forma segura
+	// Isso ignora qualquer outra chave que não seja uma sessão de usuário
+	var count int64
+	iter := sm.client.Scan(ctx, 0, "session:*", 0).Iterator()
+	for iter.Next(ctx) {
+		count++
+	}
+	if err := iter.Err(); err != nil {
+		return 0, err
+	}
+	
+	return count, nil
 }
