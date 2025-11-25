@@ -6,6 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    hostname: "node-01"
     restart: always
     environment:
       - REDIS_ADDR=redis-store:6379 # Nome do serviço do Redis
@@ -21,6 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    hostname: "node-02"
     restart: always
     environment:
       - REDIS_ADDR=redis-store:6379

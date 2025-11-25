@@ -5,53 +5,87 @@
     <title>Zenith Cluster Monitor</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: #e0e0e0; padding: 20px; }
-        h1 { color: #00add8; text-align: center; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 20px; }
-        .card { background: #2d2d2d; padding: 20px; border-radius: 8px; border-left: 5px solid #4caf50; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        h1 { color: #00add8; text-align: center; margin-bottom: 10px; }
+        
+        .controls { text-align: center; margin-bottom: 30px; }
+        button { background: #00add8; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 1rem; transition: background 0.3s; }
+        button:hover { background: #008bb3; }
+        
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .card { background: #2d2d2d; padding: 20px; border-radius: 8px; border-left: 5px solid #4caf50; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: all 0.3s ease; }
         .card.offline { border-left-color: #f44336; opacity: 0.6; }
+        
         .stat { display: flex; justify-content: space-between; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; }
         .stat-label { color: #888; }
         .stat-val { font-weight: bold; }
         .redis-card { border-left-color: #ff5722; }
-        #total-sessions { font-size: 2em; text-align: center; display: block; margin: 10px 0; }
+        
+        #total-sessions { font-size: 2.5em; text-align: center; display: block; margin: 10px 0; color: #fff; }
+        .progress-bar { height: 4px; background: #444; margin-top: 20px; width: 100%; border-radius: 2px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #00add8; width: 0%; transition: width 1s linear; }
     </style>
 </head>
 <body>
     <h1>🚀 Zenith-Go Cluster Monitor</h1>
     
+    <div class="controls">
+        <button onclick="manualRefresh()">🔄 Atualizar Agora</button>
+    </div>
+
     <div class="grid">
         <div class="card redis-card">
             <h3>Global State (Redis)</h3>
-            <span id="total-sessions">0</span>
+            <span id="total-sessions">--</span>
             <div style="text-align: center; color: #aaa;">Active User Sessions</div>
         </div>
         <div class="card" style="border-left-color: #00add8;">
             <h3>Load Balancer</h3>
             <div class="stat"><span class="stat-label">Detected Nodes:</span> <span class="stat-val" id="node-count">0</span></div>
-            <div class="stat"><span class="stat-label">Status:</span> <span class="stat-val" style="color:#4caf50">Online</span></div>
+            <div class="stat"><span class="stat-label">Auto-Refresh:</span> <span class="stat-val">Every 5s</span></div>
+            <div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
         </div>
     </div>
 
-    <h2 style="margin-top: 40px;">API Nodes (Live)</h2>
+    <h2 style="margin-top: 40px;">API Nodes</h2>
     <div id="nodes-container" class="grid"></div>
 
     <script>
-        const nodes = {}; // Armazena o estado dos nós conhecidos
+        const nodes = {}; 
+        const REFRESH_INTERVAL = 5000; // 5 segundos
+        let timer = 0;
+
+        // Formata segundos para "1d 2h 30m"
+        function formatUptime(seconds) {
+            const d = Math.floor(seconds / (3600*24));
+            const h = Math.floor(seconds % (3600*24) / 3600);
+            const m = Math.floor(seconds % 3600 / 60);
+            
+            let parts = [];
+            if (d > 0) parts.push(`${d}d`);
+            if (h > 0) parts.push(`${h}h`);
+            parts.push(`${m}m`);
+            
+            return parts.join(' ');
+        }
 
         async function fetchStats() {
             try {
-                // Faz requisição ao Load Balancer. Ele vai entregar para UM dos nós.
-                const res = await fetch('/apiv1/health');
-                const data = await res.json();
-
-                // Atualiza ou cria o nó na lista
-                nodes[data.node_id] = { ...data, lastSeen: Date.now() };
-                
+                // Tenta bater na API. O Nginx vai jogar para um dos nós.
+                // Como queremos descobrir todos, em um cenário real de produção,
+                // ferramentas como Prometheus são ideais. 
+                // Aqui, fazemos um "burst" de 3 chamadas rápidas para tentar pegar nós diferentes no Round-Robin.
+                for(let i=0; i<3; i++) {
+                    const res = await fetch('/apiv1/health');
+                    if(res.ok) {
+                        const data = await res.json();
+                        nodes[data.node_id] = { ...data, lastSeen: Date.now() };
+                        // Atualiza sessão global (pega do último nó que respondeu)
+                        document.getElementById('total-sessions').innerText = data.active_sessions;
+                    }
+                }
                 renderNodes();
-                updateGlobalStats(data.active_sessions);
-
             } catch (e) {
-                console.error("Erro ao buscar stats", e);
+                console.error("Erro de conexão com API", e);
             }
         }
 
@@ -60,17 +94,17 @@
             container.innerHTML = '';
             let activeCount = 0;
 
-            // Ordena nós por nome
             Object.keys(nodes).sort().forEach(id => {
                 const node = nodes[id];
-                const isLive = (Date.now() - node.lastSeen) < 5000; // Considera offline se não responder em 5s (assumindo polling rápido)
+                // Considera offline se não responder em 15s (3 ciclos de refresh)
+                const isLive = (Date.now() - node.lastSeen) < (REFRESH_INTERVAL * 3); 
                 if (isLive) activeCount++;
 
                 const html = `
                     <div class="card ${isLive ? '' : 'offline'}">
                         <h3>📦 ${node.node_id}</h3>
                         <div class="stat"><span class="stat-label">Status:</span> <span class="stat-val" style="color:${isLive ? '#4caf50':'#f44336'}">${isLive ? 'ONLINE' : 'OFFLINE'}</span></div>
-                        <div class="stat"><span class="stat-label">Uptime:</span> <span class="stat-val">${node.uptime}</span></div>
+                        <div class="stat"><span class="stat-label">Uptime:</span> <span class="stat-val">${formatUptime(node.uptime_seconds)}</span></div>
                         <div class="stat"><span class="stat-label">Memory:</span> <span class="stat-val">${node.memory_usage_mb} MB</span></div>
                         <div class="stat"><span class="stat-label">Goroutines:</span> <span class="stat-val">${node.goroutines}</span></div>
                         <div class="stat"><span class="stat-label">Redis Link:</span> <span class="stat-val">${node.redis_status}</span></div>
@@ -79,18 +113,28 @@
                 `;
                 container.innerHTML += html;
             });
-            
             document.getElementById('node-count').innerText = activeCount;
         }
 
-        function updateGlobalStats(sessions) {
-            document.getElementById('total-sessions').innerText = sessions;
+        function manualRefresh() {
+            timer = REFRESH_INTERVAL; // Força o timer a disparar no próximo tick visual
+            fetchStats();
         }
 
-        // Polling agressivo (500ms) para "bater" em todos os nós rapidamente através do Round-Robin do Nginx
-        setInterval(fetchStats, 500);
-        // Limpeza de visualização a cada segundo
-        setInterval(renderNodes, 1000);
+        // Lógica da Barra de Progresso e Loop
+        setInterval(() => {
+            timer += 100;
+            const width = (timer / REFRESH_INTERVAL) * 100;
+            document.getElementById('progress').style.width = width + '%';
+
+            if (timer >= REFRESH_INTERVAL) {
+                timer = 0;
+                fetchStats();
+            }
+        }, 100);
+
+        // Primeira carga
+        fetchStats();
     </script>
 </body>
 </html>

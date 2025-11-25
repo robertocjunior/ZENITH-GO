@@ -14,36 +14,35 @@ type HealthHandler struct {
 }
 
 type HealthResponse struct {
-	NodeID         string `json:"node_id"`         // Nome do Container (ex: zenith-app-1)
-	Status         string `json:"status"`          // "online"
-	Uptime         string `json:"uptime"`          // Desde quando está rodando
-	MemoryUsageMB  uint64 `json:"memory_usage_mb"` // Memória RAM usada
-	Goroutines     int    `json:"goroutines"`      // Threads leves do Go
-	RedisStatus    string `json:"redis_status"`    // "connected" ou erro
-	ActiveSessions int64  `json:"active_sessions"` // Total de sessões no Redis
+	NodeID         string `json:"node_id"`
+	Status         string `json:"status"`
+	UptimeSeconds  int64  `json:"uptime_seconds"` // MUDANÇA: Envia segundos puros
+	MemoryUsageMB  uint64 `json:"memory_usage_mb"`
+	Goroutines     int    `json:"goroutines"`
+	RedisStatus    string `json:"redis_status"`
+	ActiveSessions int64  `json:"active_sessions"`
 	Timestamp      string `json:"timestamp"`
 }
 
 var startTime = time.Now()
 
 func (h *HealthHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
-	// 1. Coleta dados do Sistema
 	hostname, _ := os.Hostname()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
-	// 2. Coleta dados do Redis
 	redisStatus := "connected"
 	sessions, err := h.Session.CountActiveSessions()
 	if err != nil {
 		redisStatus = "disconnected: " + err.Error()
-		sessions = -1 // Indica erro na contagem
+		sessions = -1
 	}
 
 	resp := HealthResponse{
 		NodeID:         hostname,
 		Status:         "online",
-		Uptime:         time.Since(startTime).String(),
+		// Calcula segundos desde o início
+		UptimeSeconds:  int64(time.Since(startTime).Seconds()), 
 		MemoryUsageMB:  m.Alloc / 1024 / 1024,
 		Goroutines:     runtime.NumGoroutine(),
 		RedisStatus:    redisStatus,
@@ -52,7 +51,6 @@ func (h *HealthHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	// Headers para permitir que o painel leia (CORS)
-	w.Header().Set("Access-Control-Allow-Origin", "*") 
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(resp)
 }

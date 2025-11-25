@@ -53,9 +53,15 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		
 		next.ServeHTTP(wrappedWriter, r)
 		
+		// --- ALTERAÇÃO AQUI ---
+		// Se for health check, não gera log para não poluir
+		if r.URL.Path == "/apiv1/health" {
+			return
+		}
+		// ---------------------
+
 		duration := time.Since(start)
 
-		// Define o nível do log baseado no status da resposta
 		logLevel := slog.LevelInfo
 		if wrappedWriter.status >= 500 {
 			logLevel = slog.LevelError
