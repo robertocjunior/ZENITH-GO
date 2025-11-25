@@ -136,6 +136,25 @@ type PickingLocation struct {
 	DescrProd string `json:"descrProd"`
 }
 
+// HistoryItem define o item do histórico de movimentação
+type HistoryItem struct {
+	Tipo       string  `json:"tipo"`
+	DatGer     string  `json:"datGer"`
+	Hora       string  `json:"hora"`
+	CodArm     int     `json:"codArm"`
+	SeqEnd     int     `json:"seqEnd"`
+	ArmDes     string  `json:"armDes"`
+	EndDes     string  `json:"endDes"`
+	CodProd    int     `json:"codProd"`
+	DescrProd  string  `json:"descrProd"`
+	Marca      string  `json:"marca"`
+	Derivacao  string  `json:"derivacao"`
+	QuantAnt   float64 `json:"quantAnt"`
+	QtdAtual   float64 `json:"qtdAtual"`
+	IdOperacao int     `json:"idOperacao"`
+	SeqIte     int     `json:"seqIte"`
+}
+
 // Client estrutura principal
 type Client struct {
 	cfg         *config.Config
@@ -482,8 +501,7 @@ func (c *Client) GetItemDetails(ctx context.Context, codArm int, sequencia strin
 }
 
 // GetPickingLocations busca locais de picking alternativos
-func (c *Client) GetPickingLocations(ctx context.Context, codArm int, codProd int, sequenciaExclude int) ([]PickingLocation, error) {
-	// Como os parâmetros são inteiros, %d é seguro contra injeção de SQL
+func (c *Client) GetPickingLocations(ctx context.Context, codArm int, codProd int, sequenciaExclude int) (map[string]PickingLocation, error) {
 	sql := fmt.Sprintf(`
 		SELECT ENDE.SEQEND, PRO.DESCRPROD 
 		FROM AD_CADEND ENDE 
@@ -499,9 +517,8 @@ func (c *Client) GetPickingLocations(ctx context.Context, codArm int, codProd in
 		return nil, err
 	}
 
-	var results []PickingLocation
+	results := make(map[string]PickingLocation)
 	for _, row := range rows {
-		// Helper para extração segura
 		getInt := func(i int) int {
 			if i >= len(row) || row[i] == nil { return 0 }
 			if f, ok := row[i].(float64); ok { return int(f) }
@@ -512,9 +529,120 @@ func (c *Client) GetPickingLocations(ctx context.Context, codArm int, codProd in
 			return fmt.Sprintf("%v", row[i])
 		}
 
-		results = append(results, PickingLocation{
-			SeqEnd:    getInt(0),
+		seq := getInt(0)
+		strSeq := strconv.Itoa(seq)
+
+		results[strSeq] = PickingLocation{
+			SeqEnd:    seq,
 			DescrProd: getString(1),
+		}
+	}
+	
+	return results, nil
+}
+
+// GetHistory busca o histórico de movimentação
+func (c *Client) GetHistory(ctx context.Context, dtIni string, dtFim string, codUsu int) ([]HistoryItem, error) {
+	// Sanitização de datas e usuário
+	safeDtIni := sanitizeStringForSql(dtIni)
+	safeDtFim := sanitizeStringForSql(dtFim)
+	
+	// Tratamento para parâmetro opcional CODUSU
+	// Se for 0, usa NULL para que a query (OR NULL IS NULL) pegue todos os usuários
+	codUsuStr := "NULL"
+	if codUsu > 0 {
+		codUsuStr = strconv.Itoa(codUsu)
+	}
+
+	sql := fmt.Sprintf(`
+		SELECT 'MOV' AS TIPO, 
+		       BXA.DATGER, 
+		       TO_CHAR(BXA.DATGER, 'HH24:MI:SS') AS HORA, 
+		       IBX.CODARM, 
+		       IBX.SEQEND, 
+		       IBX.ARMDES, 
+		       IBX.ENDDES, 
+		       IBX.CODPROD, 
+		       PRO.DESCRPROD, 
+		       PRO.MARCA, 
+		       (SELECT MAX(V.DESCRDANFE) 
+		        FROM TGFVOA V 
+		        WHERE V.CODPROD = IBX.CODPROD 
+		          AND V.CODVOL = PRO.CODVOL) AS DERIVACAO, 
+		       NULL AS QUANT_ANT, 
+		       NULL AS QTD_ATUAL, 
+		       BXA.SEQBAI AS ID_OPERACAO, 
+		       IBX.SEQITE
+		FROM AD_BXAEND BXA 
+		JOIN AD_IBXEND IBX ON IBX.SEQBAI = BXA.SEQBAI 
+		LEFT JOIN TGFPRO PRO ON IBX.CODPROD = PRO.CODPROD
+		WHERE (BXA.USUGER = %s OR %s IS NULL)
+		  AND TRUNC(BXA.DATGER) BETWEEN TO_DATE('%s', 'DD/MM/YYYY') AND TO_DATE('%s', 'DD/MM/YYYY')
+
+		UNION ALL
+
+		SELECT 'CORRECAO' AS TIPO, 
+		       H.DTHOPER, 
+		       TO_CHAR(H.DTHOPER, 'HH24:MI:SS') AS HORA, 
+		       H.CODARM, 
+		       H.SEQEND, 
+		       NULL, 
+		       NULL, 
+		       H.CODPROD, 
+		       (SELECT P.DESCRPROD FROM TGFPRO P WHERE P.CODPROD = H.CODPROD), 
+		       H.MARCA, 
+		       H.DERIV, 
+		       H.QUANT, 
+		       H.QATUAL, 
+		       H.NUMUNICO, 
+		       NULL
+		FROM AD_HISTENDAPP H
+		WHERE (H.CODUSU = %s OR %s IS NULL)
+		  AND TRUNC(H.DTHOPER) BETWEEN TO_DATE('%s', 'DD/MM/YYYY') AND TO_DATE('%s', 'DD/MM/YYYY')
+
+		ORDER BY 2 DESC, 15 ASC`, 
+		codUsuStr, codUsuStr, safeDtIni, safeDtFim, // Params 1ª parte
+		codUsuStr, codUsuStr, safeDtIni, safeDtFim) // Params 2ª parte
+
+	rows, err := c.executeQuery(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []HistoryItem
+	for _, row := range rows {
+		// Helpers
+		getInt := func(i int) int {
+			if i >= len(row) || row[i] == nil { return 0 }
+			if f, ok := row[i].(float64); ok { return int(f) }
+			return 0
+		}
+		getFloat := func(i int) float64 {
+			if i >= len(row) || row[i] == nil { return 0 }
+			if f, ok := row[i].(float64); ok { return f }
+			return 0
+		}
+		getString := func(i int) string {
+			if i >= len(row) || row[i] == nil { return "" }
+			return fmt.Sprintf("%v", row[i])
+		}
+
+		results = append(results, HistoryItem{
+			Tipo:       getString(0),
+			DatGer:     getString(1),
+			Hora:       getString(2),
+			CodArm:     getInt(3),
+			SeqEnd:     getInt(4),
+			ArmDes:     getString(5),
+			EndDes:     getString(6),
+			CodProd:    getInt(7),
+			DescrProd:  getString(8),
+			Marca:      getString(9),
+			Derivacao:  getString(10),
+			QuantAnt:   getFloat(11),
+			QtdAtual:   getFloat(12),
+			IdOperacao: getInt(13),
+			SeqIte:     getInt(14),
 		})
 	}
 	

@@ -18,7 +18,6 @@ type ProductHandler struct {
 	Session *auth.SessionManager
 }
 
-// Removemos SessionToken dos inputs
 type searchItemsInput struct {
 	CodArm int    `json:"codArm"`
 	Filtro string `json:"filtro"`
@@ -35,7 +34,13 @@ type getPickingLocationsInput struct {
 	Sequencia int `json:"sequencia"`
 }
 
-// Helper para extrair token do Header Authorization (Duplicado para evitar dependência cruzada complexa)
+type getHistoryInput struct {
+	DtIni  string `json:"dtIni"`
+	DtFim  string `json:"dtFim"`
+	CodUsu int    `json:"codUsu"` // Opcional
+}
+
+// Helper para extrair token do Header Authorization
 func getTokenFromHeaderProduct(r *http.Request) string {
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
@@ -72,7 +77,7 @@ func (h *ProductHandler) HandleSearchItems(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// 3. Decode do Body (apenas dados de busca agora)
+	// 3. Decode do Body
 	var input searchItemsInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "JSON inválido", http.StatusBadRequest)
@@ -160,7 +165,6 @@ func (h *ProductHandler) HandleGetItemDetails(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(item)
 }
 
-// HandleGetPickingLocations busca locais de picking alternativos
 func (h *ProductHandler) HandleGetPickingLocations(w http.ResponseWriter, r *http.Request) {
 	// TIMEOUT: 30 segundos
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -216,4 +220,62 @@ func (h *ProductHandler) HandleGetPickingLocations(w http.ResponseWriter, r *htt
 	// 5. Retorna os dados
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(locations)
+}
+
+// HandleGetHistory busca o histórico
+func (h *ProductHandler) HandleGetHistory(w http.ResponseWriter, r *http.Request) {
+	// TIMEOUT: 60 segundos (Relatórios podem demorar mais)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 1. Token Header
+	token := getTokenFromHeaderProduct(r)
+	if token == "" {
+		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. Segurança
+	if _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	if err := h.Session.ValidateAndUpdate(token); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// 3. Decode Body
+	var input getHistoryInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "JSON inválido", http.StatusBadRequest)
+		return
+	}
+
+	// Validação
+	if input.DtIni == "" || input.DtFim == "" {
+		http.Error(w, "Datas inicial e final são obrigatórias", http.StatusBadRequest)
+		return
+	}
+
+	// 4. Busca
+	history, err := h.Client.GetHistory(ctx, input.DtIni, input.DtFim, input.CodUsu)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			http.Error(w, "Tempo limite excedido", http.StatusGatewayTimeout)
+			return
+		}
+		http.Error(w, "Erro na busca: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 5. Retorno
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
 }
