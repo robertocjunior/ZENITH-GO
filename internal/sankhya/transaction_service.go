@@ -17,7 +17,25 @@ type TransactionInput struct {
 	CodUsu  int
 }
 
-// ExecuteServiceWithCookie chama um serviço Sankhya usando o JSESSIONID do usuário (TransactionUrl)
+// Helpers para conversão segura de tipos (Evita Panic)
+func safeFloat64(v any) float64 {
+	if v == nil {
+		return 0
+	}
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return 0
+}
+
+func safeString(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// ExecuteServiceWithCookie chama um serviço Sankhya usando o JSESSIONID do usuário
 func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName string, requestBody any, snkSessionId string) (*TransactionResponse, error) {
 	url := fmt.Sprintf("%s/service.sbr?serviceName=%s&outputType=json", c.cfg.TransactionUrl, serviceName)
 
@@ -60,7 +78,7 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 	return &result, nil
 }
 
-// ExecuteServiceAsSystem chama um serviço Sankhya usando o Bearer Token do Sistema (ApiUrl)
+// ExecuteServiceAsSystem chama um serviço Sankhya usando o Bearer Token do Sistema
 func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string, requestBody any) (*TransactionResponse, error) {
 	sysToken, err := c.GetToken(ctx)
 	if err != nil {
@@ -142,9 +160,10 @@ func (c *Client) ExecuteTransaction(ctx context.Context, input TransactionInput,
 // handleCorrecao trata a lógica específica de correção de estoque
 func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snkSessionId string) (string, error) {
 	payload := input.Payload
-	codArm := int(payload["codarm"].(float64))
-	sequencia := int(payload["sequencia"].(float64))
-	newQuantity := payload["newQuantity"].(float64)
+	// Uso de safeFloat64 para evitar panic na conversão do JSON
+	codArm := int(safeFloat64(payload["codarm"]))
+	sequencia := int(safeFloat64(payload["sequencia"]))
+	newQuantity := safeFloat64(payload["newQuantity"])
 
 	sqlItem := fmt.Sprintf(`
 		SELECT 
@@ -165,26 +184,14 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	}
 	row := rows[0]
 
-	getString := func(idx int) string {
-		if row[idx] == nil {
-			return ""
-		}
-		return fmt.Sprintf("%v", row[idx])
-	}
-	getFloat := func(idx int) float64 {
-		if val, ok := row[idx].(float64); ok {
-			return val
-		}
-		return 0
-	}
-
-	codProd := getString(0)
-	codVol := getString(1)
-	datEnt := getString(2)
-	datVal := getString(3)
-	qtdAnt := getFloat(4)
-	marca := getString(5)
-	deriv := getString(6)
+	// Extração segura usando helpers
+	codProd := safeString(row[0])
+	codVol := safeString(row[1])
+	datEnt := safeString(row[2])
+	datVal := safeString(row[3])
+	qtdAnt := safeFloat64(row[4])
+	marca := safeString(row[5])
+	deriv := safeString(row[6])
 
 	scriptBody := ExecuteScriptBody{}
 	scriptBody.RunScript.ActionID = "97"
@@ -235,53 +242,48 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	return "Correção executada com sucesso!", nil
 }
 
-// verifyPickingStatus verifica no banco se um endereço é de picking
-func (c *Client) verifyPickingStatus(ctx context.Context, codArm int, sequencia int) (bool, error) {
-	sql := fmt.Sprintf(`SELECT ENDPIC FROM AD_CADEND WHERE CODARM = %d AND SEQEND = %d`, codArm, sequencia)
+// getOriginData busca CODPROD e ENDPIC da origem no banco (System Token)
+func (c *Client) getOriginData(ctx context.Context, codArm int, sequencia int) (string, string, error) {
+	sql := fmt.Sprintf(`SELECT CODPROD, ENDPIC FROM AD_CADEND WHERE CODARM = %d AND SEQEND = %d`, codArm, sequencia)
 	rows, err := c.executeQuery(ctx, sql)
 	if err != nil {
-		return false, fmt.Errorf("erro ao verificar status de picking: %w", err)
+		return "", "", fmt.Errorf("erro ao consultar dados da origem: %w", err)
 	}
-	
-	// Se não retornou linha, assume que não é picking (ou item não existe, o que falhará depois)
 	if len(rows) == 0 {
-		return false, nil
+		return "", "", fmt.Errorf("item de origem não encontrado no estoque")
 	}
 
-	// ENDPIC é retornado como string "S" ou "N"
-	endPic := fmt.Sprintf("%v", rows[0][0])
-	return endPic == "S", nil
+	// CORREÇÃO: Uso de safeFloat64 para evitar panic se CODPROD for null/incompatível
+	codProd := fmt.Sprintf("%.0f", safeFloat64(rows[0][0]))
+	endPic := safeString(rows[0][1])
+
+	return codProd, endPic, nil
 }
 
 // handleMovimentacao trata Baixa, Transferência e Picking
 func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput, snkSessionId string, perms *UserPermissions) (string, error) {
 	payload := input.Payload
 
-	// --- VALIDAÇÃO DE SEGURANÇA (Server-Side) ---
-	// Extrai dados da origem para verificar se é Picking no Banco de Dados
+	// --- VALIDAÇÃO E ENRIQUECIMENTO (Server-Side) ---
 	var origemCodArm, origemSeq int
-	
-	// O payload["origem"] é um map[string]any vindo do JSON decode
 	if origemMap, ok := payload["origem"].(map[string]any); ok {
-		origemCodArm = int(origemMap["codarm"].(float64))
-		origemSeq = int(origemMap["sequencia"].(float64))
+		origemCodArm = int(safeFloat64(origemMap["codarm"]))
+		origemSeq = int(safeFloat64(origemMap["sequencia"]))
 	} else {
 		return "", fmt.Errorf("payload inválido: dados de origem não encontrados")
 	}
 
-	// Consulta o banco para ver se é realmente Picking
-	isPicking, err := c.verifyPickingStatus(ctx, origemCodArm, origemSeq)
+	// Busca CODPROD e ENDPIC direto do banco
+	serverCodProd, serverEndPic, err := c.getOriginData(ctx, origemCodArm, origemSeq)
 	if err != nil {
 		return "", err
 	}
 
-	// Se for Picking no banco e o usuário não tiver permissão BXAPICK -> Bloqueia
-	if isPicking && !perms.BxaPick {
+	if serverEndPic == "S" && !perms.BxaPick {
 		return "", fmt.Errorf("permissão negada: você não tem permissão para movimentar/baixar itens de um endereço de Picking")
 	}
 	// ---------------------------------------------
 
-	// 1. Cria Cabeçalho (AD_BXAEND)
 	hoje := time.Now().Format("02/01/2006")
 	headerBody := DatasetSaveBody{
 		EntityName: "AD_BXAEND",
@@ -304,53 +306,50 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 	}
 	seqBai := resHeader.ResponseBody.Result[0][0]
 
-	// 2. Prepara Itens (AD_IBXEND)
 	records := []DatasetRecord{}
 
 	fmtQtd := func(v any) string {
-		f, _ := v.(float64)
-		return fmt.Sprintf("%.3f", f)
+		return fmt.Sprintf("%.3f", safeFloat64(v)) // Uso seguro
 	}
 
 	if input.Type == "baixa" {
-		// Validação de picking já feita acima
-		origem := payload["origem"].(map[string]any)
 		qtd := payload["quantidade"]
 
 		records = append(records, DatasetRecord{
 			Values: map[string]string{
 				"0": seqBai,
-				"1": fmt.Sprintf("%.0f", origem["codarm"]),
-				"2": fmt.Sprintf("%.0f", origem["sequencia"]),
-				"3": "", // null
-				"4": "", // null
+				"1": fmt.Sprintf("%d", origemCodArm),
+				"2": fmt.Sprintf("%d", origemSeq),
+				"3": "",
+				"4": "",
 				"5": fmtQtd(qtd),
 				"6": "S",
 			},
 		})
 	} else {
-		// Transferencia ou Picking
-		origem := payload["origem"].(map[string]any)
 		destino := payload["destino"].(map[string]any)
+		destCodArm := int(safeFloat64(destino["armazemDestino"]))
+		destSeq := safeString(destino["enderecoDestino"])
+		destQtdUser := destino["quantidade"]
 
-		// Verifica destino (System Token)
-		sqlDest := fmt.Sprintf("SELECT CODPROD, QTDPRO FROM AD_CADEND WHERE SEQEND = '%s' AND CODARM = %.0f",
-			sanitizeStringForSql(destino["enderecoDestino"].(string)), destino["armazemDestino"])
+		// Verifica destino (System Token) para Consolidação (Merge)
+		sqlDest := fmt.Sprintf("SELECT CODPROD, QTDPRO FROM AD_CADEND WHERE SEQEND = '%s' AND CODARM = %d",
+			sanitizeStringForSql(destSeq), destCodArm)
 
 		rowsDest, _ := c.executeQuery(ctx, sqlDest)
 
-		// Simulação de Merge
 		if len(rowsDest) > 0 {
-			destProd := fmt.Sprintf("%v", rowsDest[0][0])
-			destQtd := rowsDest[0][1].(float64)
-			origProd := fmt.Sprintf("%.0f", origem["codprod"])
+			// CORREÇÃO: Extração segura dos dados do destino para evitar panic
+			destProd := fmt.Sprintf("%.0f", safeFloat64(rowsDest[0][0]))
+			destQtd := safeFloat64(rowsDest[0][1])
 
-			if destProd == origProd {
+			// Se destino tem MESMO PRODUTO (validado pelo server), baixa ele primeiro
+			if destProd == serverCodProd {
 				records = append(records, DatasetRecord{
 					Values: map[string]string{
 						"0": seqBai,
-						"1": fmt.Sprintf("%.0f", destino["armazemDestino"]),
-						"2": destino["enderecoDestino"].(string),
+						"1": fmt.Sprintf("%d", destCodArm),
+						"2": destSeq,
 						"3": "",
 						"4": "",
 						"5": fmt.Sprintf("%.3f", destQtd),
@@ -364,16 +363,15 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		records = append(records, DatasetRecord{
 			Values: map[string]string{
 				"0": seqBai,
-				"1": fmt.Sprintf("%.0f", origem["codarm"]),
-				"2": fmt.Sprintf("%.0f", origem["sequencia"]),
-				"3": fmt.Sprintf("%.0f", destino["armazemDestino"]),
-				"4": destino["enderecoDestino"].(string),
-				"5": fmtQtd(destino["quantidade"]),
+				"1": fmt.Sprintf("%d", origemCodArm),
+				"2": fmt.Sprintf("%d", origemSeq),
+				"3": fmt.Sprintf("%d", destCodArm),
+				"4": destSeq,
+				"5": fmtQtd(destQtdUser),
 				"6": "S",
 			},
 		})
 
-		// Marca destino como picking se solicitado (User Session)
 		createPick, _ := destino["criarPick"].(bool)
 		if input.Type == "transferencia" && createPick && perms.CriaPick {
 			updateBody := DatasetSaveBody{
@@ -382,8 +380,8 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 				Fields:     []string{"CODARM", "SEQEND", "ENDPIC"},
 				Records: []DatasetRecord{{
 					PK: map[string]string{
-						"CODARM": fmt.Sprintf("%.0f", destino["armazemDestino"]),
-						"SEQEND": destino["enderecoDestino"].(string),
+						"CODARM": fmt.Sprintf("%d", destCodArm),
+						"SEQEND": destSeq,
 					},
 					Values: map[string]string{"2": "S"},
 				}},
@@ -392,7 +390,6 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		}
 	}
 
-	// 3. Salva Itens em Batch (User Session)
 	if len(records) > 0 {
 		itemsBody := DatasetSaveBody{
 			EntityName: "AD_IBXEND",
@@ -406,14 +403,14 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		}
 	}
 
-	// 4. Polling (System Token)
+	// Polling
 	populated := false
 	for i := 0; i < 10; i++ {
 		time.Sleep(500 * time.Millisecond)
 		sqlPoll := fmt.Sprintf("SELECT COUNT(*) FROM AD_IBXEND WHERE SEQBAI = %s AND CODPROD IS NOT NULL", seqBai)
 		rows, err := c.executeQuery(ctx, sqlPoll)
 		if err == nil && len(rows) > 0 {
-			count, _ := strconv.Atoi(fmt.Sprintf("%v", rows[0][0]))
+			count := int(safeFloat64(rows[0][0])) // Conversão segura
 			if count >= len(records) {
 				populated = true
 				break
@@ -424,7 +421,6 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		return "", fmt.Errorf("timeout: sistema não processou itens a tempo")
 	}
 
-	// 5. Executa STP Finalizadora (User Session)
 	stpBody := ExecuteSTPBody{}
 	stpBody.StpCall.ActionID = "20"
 	stpBody.StpCall.ProcName = "NIC_STP_BAIXA_END"
