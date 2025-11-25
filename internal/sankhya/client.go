@@ -2,6 +2,7 @@ package sankhya
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -146,12 +147,12 @@ func NewClient(cfg *config.Config) *Client {
 }
 
 // Authenticate login do SISTEMA
-func (c *Client) Authenticate() error {
+func (c *Client) Authenticate(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	url := fmt.Sprintf("%s/login", c.cfg.ApiUrl)
-	req, err := http.NewRequest("POST", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return err
 	}
@@ -187,7 +188,7 @@ func (c *Client) Authenticate() error {
 	return nil
 }
 
-func (c *Client) GetToken() (string, error) {
+func (c *Client) GetToken(ctx context.Context) (string, error) {
 	c.mu.RLock()
 	if c.bearerToken != "" && time.Now().Before(c.tokenExpiry) {
 		token := c.bearerToken
@@ -196,7 +197,7 @@ func (c *Client) GetToken() (string, error) {
 	}
 	c.mu.RUnlock()
 
-	if err := c.Authenticate(); err != nil {
+	if err := c.Authenticate(ctx); err != nil {
 		return "", err
 	}
 
@@ -205,10 +206,9 @@ func (c *Client) GetToken() (string, error) {
 	return c.bearerToken, nil
 }
 
-// executeQuery é um helper privado para rodar SQLs
-// SEGURANÇA: Agora aceita mapa de parâmetros para queries parametrizadas
-func (c *Client) executeQuery(sql string, params map[string]any) ([][]any, error) {
-	sysToken, err := c.GetToken()
+// executeQuery - REVERTIDO: Removemos params para garantir compatibilidade
+func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) {
+	sysToken, err := c.GetToken(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -217,13 +217,7 @@ func (c *Client) executeQuery(sql string, params map[string]any) ([][]any, error
 		ServiceName: "DbExplorerSP.executeQuery",
 	}
 	reqBody.RequestBody.SQL = sql
-	
-	// Inicializa o mapa se for nulo
-	if params == nil {
-		reqBody.RequestBody.Params = make(map[string]any)
-	} else {
-		reqBody.RequestBody.Params = params
-	}
+	reqBody.RequestBody.Params = make(map[string]any)
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
@@ -231,7 +225,7 @@ func (c *Client) executeQuery(sql string, params map[string]any) ([][]any, error
 	}
 
 	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json", c.cfg.ApiUrl)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, err
 	}
@@ -253,10 +247,12 @@ func (c *Client) executeQuery(sql string, params map[string]any) ([][]any, error
 	return result.ResponseBody.Rows, nil
 }
 
-// VerifyUserAccess valida permissão básica do usuário
-func (c *Client) VerifyUserAccess(username string) (float64, error) {
-	// SEGURANÇA: Uso de parâmetro :NOMEUSU
-	sqlQuery := `
+// VerifyUserAccess - REVERTIDO: Uso de Sprintf com Sanitização
+func (c *Client) VerifyUserAccess(ctx context.Context, username string) (float64, error) {
+	// Sanitiza o input antes de concatenar
+	safeUsername := sanitizeStringForSql(strings.ToUpper(username))
+
+	sqlQuery := fmt.Sprintf(`
 		SELECT 
 			U.CODUSU, 
 			CASE 
@@ -264,13 +260,9 @@ func (c *Client) VerifyUserAccess(username string) (float64, error) {
 				ELSE 'FALSE' 
 			END AS PERMITIDO 
 		FROM TSIUSU U 
-		WHERE U.NOMEUSU = :NOMEUSU`
+		WHERE U.NOMEUSU = '%s'`, safeUsername)
 
-	params := map[string]any{
-		"NOMEUSU": strings.ToUpper(username),
-	}
-
-	rows, err := c.executeQuery(sqlQuery, params)
+	rows, err := c.executeQuery(ctx, sqlQuery)
 	if err != nil {
 		return 0, err
 	}
@@ -290,27 +282,23 @@ func (c *Client) VerifyUserAccess(username string) (float64, error) {
 	return codUsu, nil
 }
 
-// VerifyDevice verifica se o device está autorizado
-func (c *Client) VerifyDevice(codUsu int, deviceToken string) error {
-	// SEGURANÇA: Uso de parâmetros
-	sqlQuery := `
+// VerifyDevice - REVERTIDO: Uso de Sprintf
+func (c *Client) VerifyDevice(ctx context.Context, codUsu int, deviceToken string) error {
+	safeToken := sanitizeStringForSql(deviceToken)
+	
+	sqlQuery := fmt.Sprintf(`
 		SELECT DEVICETOKEN, CODUSU, ATIVO 
 		FROM AD_DISPAUT 
-		WHERE CODUSU = :CODUSU AND DEVICETOKEN = :DEVICETOKEN`
-	
-	params := map[string]any{
-		"CODUSU":      codUsu,
-		"DEVICETOKEN": deviceToken,
-	}
+		WHERE CODUSU = %d AND DEVICETOKEN = '%s'`, codUsu, safeToken)
 
-	rows, err := c.executeQuery(sqlQuery, params)
+	rows, err := c.executeQuery(ctx, sqlQuery)
 	if err != nil {
 		return err
 	}
 
 	if len(rows) == 0 {
-		sysToken, _ := c.GetToken()
-		if regErr := c.registerDevice(sysToken, codUsu, deviceToken); regErr != nil {
+		sysToken, _ := c.GetToken(ctx)
+		if regErr := c.registerDevice(ctx, sysToken, codUsu, deviceToken); regErr != nil {
 			return fmt.Errorf("erro ao registrar novo device: %w", regErr)
 		}
 		return ErrDevicePendingApproval
@@ -323,7 +311,7 @@ func (c *Client) VerifyDevice(codUsu int, deviceToken string) error {
 	return ErrDevicePendingApproval
 }
 
-func (c *Client) registerDevice(token string, codUsu int, deviceToken string) error {
+func (c *Client) registerDevice(ctx context.Context, token string, codUsu int, deviceToken string) error {
 	dhGer := time.Now().Format("02/01/2006")
 	reqBody := datasetSaveRequest{
 		ServiceName: "DatasetSP.save",
@@ -344,7 +332,7 @@ func (c *Client) registerDevice(token string, codUsu int, deviceToken string) er
 	jsonData, _ := json.Marshal(reqBody)
 
 	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DatasetSP.save&outputType=json", c.cfg.ApiUrl)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
 	}
@@ -365,9 +353,9 @@ func (c *Client) registerDevice(token string, codUsu int, deviceToken string) er
 	return nil
 }
 
-func (c *Client) GetUserPermissions(codUsu int) (*UserPermissions, error) {
-	// SEGURANÇA: Uso de parâmetros
-	sqlQuery := `
+// GetUserPermissions - REVERTIDO: Uso de Sprintf
+func (c *Client) GetUserPermissions(ctx context.Context, codUsu int) (*UserPermissions, error) {
+	sqlQuery := fmt.Sprintf(`
 		SELECT 
 			LISTAGG(d.CODARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_CODIGOS, 
 			LISTAGG(d.CODARM || ' - ' || a.DESARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_NOMES, 
@@ -375,12 +363,10 @@ func (c *Client) GetUserPermissions(codUsu int) (*UserPermissions, error) {
 		FROM AD_APPPERM p 
 		JOIN AD_PERMEND d ON d.NUMREG = p.NUMREG 
 		JOIN AD_CADARM a ON a.CODARM = d.CODARM 
-		WHERE p.CODUSU = :CODUSU 
-		GROUP BY p.CODUSU, p.TRANSF, p.BAIXA, p.PICK, p.CORRE, p.BXAPICK, p.CRIAPICK`
-	
-	params := map[string]any{"CODUSU": codUsu}
+		WHERE p.CODUSU = %d 
+		GROUP BY p.CODUSU, p.TRANSF, p.BAIXA, p.PICK, p.CORRE, p.BXAPICK, p.CRIAPICK`, codUsu)
 
-	rows, err := c.executeQuery(sqlQuery, params)
+	rows, err := c.executeQuery(ctx, sqlQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -404,8 +390,8 @@ func (c *Client) GetUserPermissions(codUsu int) (*UserPermissions, error) {
 	}, nil
 }
 
-func (c *Client) LoginUser(username, password string) (string, error) {
-	sysToken, err := c.GetToken()
+func (c *Client) LoginUser(ctx context.Context, username, password string) (string, error) {
+	sysToken, err := c.GetToken(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -417,7 +403,7 @@ func (c *Client) LoginUser(username, password string) (string, error) {
 	jsonData, _ := json.Marshal(reqBody)
 
 	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=MobileLoginSP.login&outputType=json", c.cfg.ApiUrl)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
 	}
@@ -438,17 +424,12 @@ func (c *Client) LoginUser(username, password string) (string, error) {
 	return result.ResponseBody.JSessionID.Value, nil
 }
 
-// GetItemDetails busca detalhes de um item e retorna UM único objeto
-func (c *Client) GetItemDetails(codArm int, sequencia string) (*ItemDetail, error) {
-	// SEGURANÇA: Uso de queries parametrizadas (:CODARM, :SEQEND)
-	sql := `SELECT * FROM V_WMS_ITEM_DETALHES WHERE CODARM = :CODARM AND SEQEND = :SEQEND`
+// GetItemDetails - REVERTIDO: Uso de Sprintf
+func (c *Client) GetItemDetails(ctx context.Context, codArm int, sequencia string) (*ItemDetail, error) {
+	safeSeq := sanitizeStringForSql(sequencia)
+	sql := fmt.Sprintf(`SELECT * FROM V_WMS_ITEM_DETALHES WHERE CODARM = %d AND SEQEND = '%s'`, codArm, safeSeq)
 	
-	params := map[string]any{
-		"CODARM": codArm,
-		"SEQEND": sequencia,
-	}
-	
-	rows, err := c.executeQuery(sql, params)
+	rows, err := c.executeQuery(ctx, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -457,10 +438,9 @@ func (c *Client) GetItemDetails(codArm int, sequencia string) (*ItemDetail, erro
 		return nil, ErrItemNotFound
 	}
 
-	// Pega apenas o primeiro registro
 	row := rows[0]
 
-	// Funções auxiliares para extração segura
+	// Helpers
 	getInt := func(i int) int {
 		if i >= len(row) || row[i] == nil { return 0 }
 		if f, ok := row[i].(float64); ok { return int(f) }
@@ -496,17 +476,11 @@ func (c *Client) GetItemDetails(codArm int, sequencia string) (*ItemDetail, erro
 	return item, nil
 }
 
-// SearchItems busca itens no armazém (Otimizada) e retorna objetos padronizados
-func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, error) {
+// SearchItems - REVERTIDO: Uso de String Builder com Sanitização
+func (c *Client) SearchItems(ctx context.Context, codArm int, filtro string) ([]SearchItemResult, error) {
 	var sqlBuilder strings.Builder
 	
-	// SEGURANÇA: Mapa de parâmetros
-	params := map[string]any{
-		"CODARM": codArm,
-	}
-
-	// SQL Base
-	sqlBuilder.WriteString(`
+	sqlBuilder.WriteString(fmt.Sprintf(`
 		SELECT /*+ ALL_ROWS */
 			ENDE.SEQEND, 
 			ENDE.CODRUA, 
@@ -527,7 +501,7 @@ func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, err
 			FROM TGFVOA 
 			GROUP BY CODPROD, CODVOL
 		) VOA ON VOA.CODPROD = ENDE.CODPROD AND VOA.CODVOL = ENDE.CODVOL
-		WHERE ENDE.CODARM = :CODARM`)
+		WHERE ENDE.CODARM = %d`, codArm))
 
 	orderBy := " ORDER BY ENDE.ENDPIC DESC, ENDE.DATVAL ASC"
 
@@ -536,38 +510,29 @@ func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, err
 		isNumeric := regexp.MustCompile(`^\d+$`).MatchString(filtroLimpo)
 
 		if isNumeric {
-			// Caso numérico: parâmetros simples
-			params["FILTRO_NUM"] = filtroLimpo
-			params["FILTRO_LIKE"] = filtroLimpo + "%" // Para o LIKE '123%'
-
-			sqlBuilder.WriteString(` 
+			filtroSafe := sanitizeStringForSql(filtroLimpo)
+			sqlBuilder.WriteString(fmt.Sprintf(` 
 				AND (
-					ENDE.SEQEND LIKE :FILTRO_LIKE 
-					OR ENDE.CODPROD = :FILTRO_NUM 
+					ENDE.SEQEND LIKE '%s%%' 
+					OR ENDE.CODPROD = %s 
 					OR ENDE.CODPROD = (
 						SELECT CODPROD FROM AD_CADEND 
-						WHERE SEQEND = :FILTRO_NUM AND CODARM = :CODARM AND ROWNUM = 1
+						WHERE SEQEND = %s AND CODARM = %d AND ROWNUM = 1
 					)
-				)`)
+				)`, filtroSafe, filtroSafe, filtroSafe, codArm))
 			
-			// Concatenação segura apenas na estrutura do ORDER BY (case não aceita bind variable na condição do when facilmente em alguns contextos, mas o filtroNum já é validado por regex \d+)
-			orderBy = fmt.Sprintf(` ORDER BY CASE WHEN ENDE.SEQEND = %s THEN 0 ELSE 1 END, ENDE.ENDPIC DESC, ENDE.DATVAL ASC`, filtroLimpo)
+			orderBy = fmt.Sprintf(` ORDER BY CASE WHEN ENDE.SEQEND = %s THEN 0 ELSE 1 END, ENDE.ENDPIC DESC, ENDE.DATVAL ASC`, filtroSafe)
 		} else {
-			// Caso texto: parâmetros dinâmicos para cada palavra
 			palavrasChave := strings.Fields(filtroLimpo)
 			if len(palavrasChave) > 0 {
 				sqlBuilder.WriteString(" AND ")
 				var condicoes []string
-				for i, palavra := range palavrasChave {
-					// Cria um nome de parâmetro único para cada palavra (ex: TERM0, TERM1)
-					paramName := fmt.Sprintf("TERM%d", i)
-					params[paramName] = "%" + strings.ToUpper(palavra) + "%"
-
-					// Monta a condição usando o parâmetro
+				for _, palavra := range palavrasChave {
+					pUpper := sanitizeStringForSql(strings.ToUpper(palavra))
 					cond := fmt.Sprintf(`(
-						TRANSLATE(UPPER(PRO.DESCRPROD), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE :%s OR
-						TRANSLATE(UPPER(PRO.MARCA), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE :%s
-					)`, paramName, paramName)
+						TRANSLATE(UPPER(PRO.DESCRPROD), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE '%%%s%%' OR
+						TRANSLATE(UPPER(PRO.MARCA), 'ÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÇ', 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE '%%%s%%'
+					)`, pUpper, pUpper)
 					condicoes = append(condicoes, cond)
 				}
 				sqlBuilder.WriteString(strings.Join(condicoes, " AND "))
@@ -577,15 +542,14 @@ func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, err
 
 	sqlBuilder.WriteString(orderBy)
 	
-	// Passa o SQL e o mapa de parâmetros preenchido
-	rows, err := c.executeQuery(sqlBuilder.String(), params)
+	rows, err := c.executeQuery(ctx, sqlBuilder.String())
 	if err != nil {
 		return nil, err
 	}
 
 	var results []SearchItemResult
 	for _, row := range rows {
-		// Helpers para conversão segura
+		// Helpers
 		getInt := func(i int) int {
 			if i >= len(row) || row[i] == nil { return 0 }
 			if f, ok := row[i].(float64); ok { return int(f) }
@@ -618,4 +582,8 @@ func (c *Client) SearchItems(codArm int, filtro string) ([]SearchItemResult, err
 	}
 
 	return results, nil
+}
+
+func sanitizeStringForSql(s string) string {
+	return strings.ReplaceAll(s, "'", "")
 }
