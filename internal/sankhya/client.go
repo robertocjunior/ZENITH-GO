@@ -123,8 +123,6 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	req.Header.Set("Authorization", "Bearer "+sysToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	// slog.Debug("Executando SQL", "sql_prefix", sql[:min(len(sql), 50)]+"...") // Debug de SQL (opcional, pode poluir)
-
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -146,11 +144,4 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 
 func sanitizeStringForSql(s string) string {
 	return strings.ReplaceAll(s, "'", "")
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog" // Importar slog
 	"net/http"
 	"strconv"
 	"time"
@@ -57,8 +56,6 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 	req.Header.Set("Cookie", fmt.Sprintf("JSESSIONID=%s", snkSessionId))
 	req.Header.Set("Content-Type", "application/json")
 
-	slog.Debug("Calling Sankhya Cookie Service", "service", serviceName) // LOG
-
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("erro de conexão com Sankhya Transaction: %w", err)
@@ -71,7 +68,6 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 	}
 
 	if result.Status != "1" && result.Status != "2" {
-		slog.Error("Sankhya Service Error", "service", serviceName, "status", result.Status, "msg", result.StatusMessage) // LOG
 		msg := result.StatusMessage
 		if msg == "" {
 			msg = "Erro desconhecido no Sankhya (Status " + result.Status + ")"
@@ -109,8 +105,6 @@ func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string,
 	req.Header.Set("Authorization", "Bearer "+sysToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	slog.Debug("Calling Sankhya System Service", "service", serviceName) // LOG
-
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("erro de conexão com Sankhya System API: %w", err)
@@ -123,7 +117,6 @@ func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string,
 	}
 
 	if result.Status != "1" {
-		slog.Error("Sankhya System API Error", "service", serviceName, "status", result.Status, "msg", result.StatusMessage) // LOG
 		msg := result.StatusMessage
 		if msg == "" {
 			msg = "Erro desconhecido (Status " + result.Status + ")"
@@ -136,7 +129,6 @@ func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string,
 
 // ExecuteTransaction orquestra a lógica baseada no tipo
 func (c *Client) ExecuteTransaction(ctx context.Context, input TransactionInput, snkSessionId string) (string, error) {
-	slog.Debug("Verificando permissões", "cod_usu", input.CodUsu, "type", input.Type)
 	perms, err := c.GetUserPermissions(ctx, input.CodUsu)
 	if err != nil {
 		return "", fmt.Errorf("falha ao verificar permissões: %w", err)
@@ -155,23 +147,23 @@ func (c *Client) ExecuteTransaction(ctx context.Context, input TransactionInput,
 	}
 
 	if !hasPermission {
-		slog.Warn("Permissão negada", "user", input.CodUsu, "type", input.Type)
 		return "", ErrPermissionDenied
 	}
 
-	if input.Type == "correcao" {
+	// Refatorado para usar Switch-Case (Melhor prática/Linter)
+	switch input.Type {
+	case "correcao":
 		return c.handleCorrecao(ctx, input, snkSessionId)
-	} else if input.Type == "picking" {
+	case "picking":
 		return c.handlePicking(ctx, input, snkSessionId, perms)
-	} else {
+	default:
+		// "baixa" ou "transferencia"
 		return c.handleMovimentacao(ctx, input, snkSessionId, perms)
 	}
 }
 
 // handleCorrecao trata a lógica específica de correção de estoque
 func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snkSessionId string) (string, error) {
-	slog.Info("Iniciando Correção de Estoque", "user", input.CodUsu)
-	
 	payload := input.Payload
 	codArm := int(safeFloat64(payload["codarm"]))
 	sequencia := int(safeFloat64(payload["sequencia"]))
@@ -196,13 +188,26 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	}
 	row := rows[0]
 
-	codProd := safeString(row[0])
-	codVol := safeString(row[1])
-	datEnt := safeString(row[2])
-	datVal := safeString(row[3])
-	qtdAnt := safeFloat64(row[4])
-	marca := safeString(row[5])
-	deriv := safeString(row[6])
+	getString := func(idx int) string {
+		if row[idx] == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", row[idx])
+	}
+	getFloat := func(idx int) float64 {
+		if val, ok := row[idx].(float64); ok {
+			return val
+		}
+		return 0
+	}
+
+	codProd := getString(0)
+	codVol := getString(1)
+	datEnt := getString(2)
+	datVal := getString(3)
+	qtdAnt := getFloat(4)
+	marca := getString(5)
+	deriv := getString(6)
 
 	scriptBody := ExecuteScriptBody{}
 	scriptBody.RunScript.ActionID = "97"
@@ -222,7 +227,6 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	}}
 	scriptBody.ClientEventList.ClientEvent = []map[string]string{{"$": "br.com.sankhya.actionbutton.clientconfirm"}}
 
-	slog.Debug("Executando Script de Correção", "actionID", "97")
 	_, err = c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeScript", scriptBody, snkSessionId)
 	if err != nil {
 		return "", err
@@ -246,7 +250,6 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 		}},
 	}
 
-	slog.Debug("Salvando Histórico de Correção", "table", "AD_HISTENDAPP")
 	_, err = c.ExecuteServiceAsSystem(ctx, "DatasetSP.save", histBody)
 	if err != nil {
 		return fmt.Sprintf("Correção executada, mas erro no histórico: %v", err), nil
@@ -274,8 +277,6 @@ func (c *Client) getOriginData(ctx context.Context, codArm int, sequencia int) (
 
 // handlePicking: Lógica exclusiva para Picking (Desacoplada)
 func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkSessionId string, perms *UserPermissions) (string, error) {
-	slog.Info("Iniciando Picking", "user", input.CodUsu)
-	
 	payload := input.Payload
 
 	// 1. Parse Origem
@@ -340,7 +341,6 @@ func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkS
 		return "", fmt.Errorf("não retornou SEQBAI")
 	}
 	seqBai := resHeader.ResponseBody.Result[0][0]
-	slog.Debug("Cabeçalho criado", "SEQBAI", seqBai)
 
 	// 6. Lógica de Limpeza (Baixa) do Destino
 	if len(rowsDest) > 0 {
@@ -349,7 +349,6 @@ func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkS
 
 		if destProd != "0" {
 			if destProd == serverCodProd {
-				slog.Info("Destino ocupado com mesmo produto. Gerando baixa de limpeza.", "qtd_limpeza", destCurrentQtd)
 				records = append(records, DatasetRecord{
 					Values: map[string]string{
 						"0": seqBai,
@@ -388,7 +387,6 @@ func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkS
 		Records:    records,
 	}
 
-	slog.Debug("Salvando itens da transação", "count", len(records))
 	_, err = c.ExecuteServiceWithCookie(ctx, "DatasetSP.save", itemsBody, snkSessionId)
 	if err != nil {
 		return "", fmt.Errorf("erro ao salvar itens de picking: %w", err)
@@ -436,7 +434,6 @@ func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkS
 		Field: []ScriptField{{FieldName: "SEQBAI", Value: seqBai}},
 	}}
 
-	slog.Debug("Executando Procedure Final", "proc", "NIC_STP_BAIXA_END")
 	resp, err := c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", stpBody, snkSessionId)
 	if err != nil {
 		return "", fmt.Errorf("erro na procedure final: %w", err)
@@ -450,8 +447,6 @@ func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkS
 
 // handleMovimentacao: Baixa e Transferência
 func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput, snkSessionId string, perms *UserPermissions) (string, error) {
-	slog.Info("Iniciando Movimentação", "type", input.Type, "user", input.CodUsu)
-	
 	payload := input.Payload
 
 	var origemCodArm, origemSeq int
@@ -491,7 +486,6 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		return "", fmt.Errorf("não retornou SEQBAI")
 	}
 	seqBai := resHeader.ResponseBody.Result[0][0]
-	slog.Debug("Cabeçalho criado", "SEQBAI", seqBai)
 
 	records := []DatasetRecord{}
 	fmtQtd := func(v any) string { return fmt.Sprintf("%.3f", safeFloat64(v)) }
@@ -526,7 +520,6 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 			destQtd := safeFloat64(rowsDest[0][1])
 
 			if destProd == serverCodProd {
-				slog.Info("Merge detectado na transferência. Baixando destino primeiro.", "destSeq", destSeq)
 				records = append(records, DatasetRecord{
 					Values: map[string]string{
 						"0": seqBai,
