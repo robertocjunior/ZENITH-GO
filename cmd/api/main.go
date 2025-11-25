@@ -2,13 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
 	"zenith-go/internal/handler"
-	"zenith-go/internal/logger" // Importe o pacote logger criado
+	"zenith-go/internal/logger"
 	"zenith-go/internal/sankhya"
 )
 
@@ -41,20 +42,14 @@ func securityMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Middleware de Logging (NOVO)
-// Registra cada requisição: Método, URL, Status, Duração e IP
+// Middleware de Logging
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-
-		// Wrapper para capturar o status code
 		wrappedWriter := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-
 		next.ServeHTTP(wrappedWriter, r)
-
 		duration := time.Since(start)
 
-		// Nível do log baseado no status
 		logLevel := slog.LevelInfo
 		if wrappedWriter.status >= 500 {
 			logLevel = slog.LevelError
@@ -74,19 +69,19 @@ func loggingMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
-	// 1. Inicializa o Sistema de Logs
-	logger.Init()
-
-	// Carrega as configurações
+	// 1. Carrega Configurações (PRIMEIRO PASSO AGORA)
+	// Usamos fmt.Println aqui porque o logger ainda não existe se falhar
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("Erro fatal ao carregar configurações", "error", err)
-		panic(err) // Encerra se não tiver config
+		fmt.Printf("Erro fatal ao carregar configurações: %v\n", err)
+		panic(err)
 	}
+
+	// 2. Inicializa Logger com as configs carregadas
+	logger.Init(cfg)
 
 	slog.Info("Configurações carregadas", "api_url", cfg.ApiUrl)
 
-	// Inicializa o cliente Sankhya
 	sankhyaClient := sankhya.NewClient(cfg)
 
 	slog.Info("Autenticando sistema no ERP...")
@@ -119,7 +114,6 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Rotas
 	mux.HandleFunc("/apiv1/login", authHandler.HandleLogin)
 	mux.HandleFunc("/apiv1/logout", authHandler.HandleLogout)
 	mux.HandleFunc("/apiv1/permissions", authHandler.HandleGetPermissions)
@@ -129,7 +123,6 @@ func main() {
 	mux.HandleFunc("/apiv1/get-history", productHandler.HandleGetHistory)
 	mux.HandleFunc("/apiv1/execute-transaction", transactionHandler.HandleExecuteTransaction)
 
-	// Encadeamento de Middlewares: Logging -> Security -> Mux
 	finalHandler := loggingMiddleware(securityMiddleware(mux))
 
 	slog.Info("Servidor rodando", "port", "8080")
