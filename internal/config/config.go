@@ -16,18 +16,23 @@ type Config struct {
 	Username       string
 	Password       string
 	JwtSecret      string
-	
-	// Configurações de Log (Opcionais)
-	LogMaxSize int // em MB
-	LogMaxAge  int // em Dias
+
+	// Logs
+	LogMaxSize int
+	LogMaxAge  int
+
+	// Redis (NOVO)
+	RedisAddr     string
+	RedisPassword string
+	RedisDB       int
 }
 
 func Load() (*Config, error) {
 	_ = godotenv.Load()
 
-	// Leitura de configurações opcionais de Log (ignora erro de conversão, assume 0)
 	logSize, _ := strconv.Atoi(os.Getenv("LOG_MAX_SIZE_MB"))
 	logAge, _ := strconv.Atoi(os.Getenv("LOG_MAX_AGE_DAYS"))
+	redisDB, _ := strconv.Atoi(os.Getenv("REDIS_DB"))
 
 	cfg := &Config{
 		ApiUrl:         os.Getenv("SANKHYA_API_URL"),
@@ -39,10 +44,20 @@ func Load() (*Config, error) {
 		JwtSecret:      os.Getenv("JWT_SECRET"),
 		LogMaxSize:     logSize,
 		LogMaxAge:      logAge,
+		// Redis Defaults
+		RedisAddr:     os.Getenv("REDIS_ADDR"),
+		RedisPassword: os.Getenv("REDIS_PASSWORD"),
+		RedisDB:       redisDB,
 	}
 
-	if cfg.ApiUrl == "" || cfg.TransactionUrl == "" || cfg.JwtSecret == "" {
-		return nil, fmt.Errorf("variáveis de ambiente obrigatórias não preenchidas")
+	// Validações básicas
+	if cfg.ApiUrl == "" || cfg.JwtSecret == "" {
+		return nil, fmt.Errorf("variáveis obrigatórias (API_URL, JWT_SECRET) não preenchidas")
+	}
+
+	// Fallback para Redis local se não definido (para dev sem docker)
+	if cfg.RedisAddr == "" {
+		cfg.RedisAddr = "localhost:6379"
 	}
 
 	return cfg, nil

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog" // Importante
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -43,6 +43,7 @@ func getTokenFromHeader(r *http.Request) string {
 }
 
 func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
+	// Contexto com timeout para o fluxo de login
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
@@ -58,7 +59,6 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// LOG: Início da tentativa
 	slog.Info("Tentativa de login", "username", input.Username, "ip", r.RemoteAddr)
 
 	finalDeviceToken := input.DeviceToken
@@ -67,7 +67,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("DeviceToken não informado, gerado novo", "token", finalDeviceToken)
 	}
 
-	// 1. Verificar Usuário
+	// 1. Verificar Usuário e Permissão Básica
 	codUsuFloat, err := h.Client.VerifyUserAccess(ctx, input.Username)
 	if err != nil {
 		slog.Warn("Falha ao verificar usuário", "username", input.Username, "error", err)
@@ -86,7 +86,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	codUsu := int(codUsuFloat)
 
-	// 2. Verificar Dispositivo
+	// 2. Verificar/Registrar Dispositivo
 	if err := h.Client.VerifyDevice(ctx, codUsu, finalDeviceToken); err != nil {
 		slog.Warn("Dispositivo não autorizado", "username", input.Username, "device", finalDeviceToken, "error", err)
 		if errors.Is(err, sankhya.ErrDevicePendingApproval) {
@@ -102,7 +102,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Login no Sankhya
+	// 3. Login no Sankhya (Obter JSESSIONID)
 	snkJSession, err := h.Client.LoginUser(ctx, input.Username, input.Password)
 	if err != nil {
 		slog.Warn("Senha inválida no Sankhya", "username", input.Username)
@@ -110,7 +110,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Gerar JWT
+	// 4. Gerar JWT da API
 	jwtToken, err := auth.GenerateToken(input.Username, codUsu, h.Config.JwtSecret)
 	if err != nil {
 		slog.Error("Erro ao gerar JWT", "error", err)
@@ -118,7 +118,12 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Session.Register(jwtToken)
+	// 5. Registrar Sessão no Redis
+	if err := h.Session.Register(jwtToken); err != nil {
+		slog.Error("Erro ao salvar sessão no Redis", "error", err)
+		http.Error(w, "Erro interno de sessão", http.StatusInternalServerError)
+		return
+	}
 
 	slog.Info("Login realizado com sucesso", "username", input.Username, "codusu", codUsu)
 
@@ -147,8 +152,15 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Remove do Redis
 	h.Session.Revoke(token)
-	slog.Info("Logout realizado", "token_prefix", token[:10]+"...")
+	
+	// Log seguro (apenas prefixo do token)
+	tokenPrefix := ""
+	if len(token) > 10 {
+		tokenPrefix = token[:10] + "..."
+	}
+	slog.Info("Logout realizado", "token_prefix", tokenPrefix)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
@@ -169,6 +181,7 @@ func (h *AuthHandler) HandleGetPermissions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Valida JWT (Assinatura)
 	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
 	if err != nil {
 		slog.Warn("Permissões negadas: token inválido", "error", err)
@@ -176,6 +189,7 @@ func (h *AuthHandler) HandleGetPermissions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Valida Sessão no Redis
 	if err := h.Session.ValidateAndUpdate(token); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
