@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
@@ -23,9 +24,7 @@ type loginInput struct {
 	DeviceToken string `json:"deviceToken"`
 }
 
-type sessionInput struct {
-	SessionToken string `json:"sessionToken"`
-}
+// sessionInput foi removido pois o token agora vem no Header
 
 type loginOutput struct {
 	Username     string `json:"username"`
@@ -33,6 +32,15 @@ type loginOutput struct {
 	SessionToken string `json:"sessionToken"`
 	SnkSessionID string `json:"snkjsessionid"`
 	DeviceToken  string `json:"deviceToken"`
+}
+
+// Helper para extrair token do Header Authorization
+func getTokenFromHeader(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		return strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	return ""
 }
 
 func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
@@ -122,13 +130,14 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var input sessionInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "JSON inválido", http.StatusBadRequest)
+	// Token via Header
+	token := getTokenFromHeader(r)
+	if token == "" {
+		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
 		return
 	}
 
-	h.Session.Revoke(input.SessionToken)
+	h.Session.Revoke(token)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
@@ -139,24 +148,25 @@ func (h *AuthHandler) HandleGetPermissions(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost { // Aceita GET também agora, já que não tem body obrigatório
 		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var input sessionInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "JSON inválido", http.StatusBadRequest)
+	// Token via Header
+	token := getTokenFromHeader(r)
+	if token == "" {
+		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
 		return
 	}
 
-	codUsu, err := auth.ValidateToken(input.SessionToken, h.Config.JwtSecret)
+	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
 	if err != nil {
 		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	if err := h.Session.ValidateAndUpdate(input.SessionToken); err != nil {
+	if err := h.Session.ValidateAndUpdate(token); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}

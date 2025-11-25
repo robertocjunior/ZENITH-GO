@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
@@ -17,23 +18,30 @@ type ProductHandler struct {
 	Session *auth.SessionManager
 }
 
+// Removemos SessionToken dos inputs
 type searchItemsInput struct {
-	SessionToken string `json:"sessionToken"`
-	CodArm       int    `json:"codArm"`
-	Filtro       string `json:"filtro"`
+	CodArm int    `json:"codArm"`
+	Filtro string `json:"filtro"`
 }
 
 type getItemDetailsInput struct {
-	SessionToken string `json:"sessionToken"`
-	CodArm       int    `json:"codArm"`
-	Sequencia    string `json:"sequencia"`
+	CodArm    int    `json:"codArm"`
+	Sequencia string `json:"sequencia"`
 }
 
 type getPickingLocationsInput struct {
-	SessionToken string `json:"sessionToken"`
-	CodArm       int    `json:"codarm"`
-	CodProd      int    `json:"codprod"`
-	Sequencia    int    `json:"sequencia"`
+	CodArm    int `json:"codarm"`
+	CodProd   int `json:"codprod"`
+	Sequencia int `json:"sequencia"`
+}
+
+// Helper para extrair token do Header Authorization (Duplicado para evitar dependência cruzada complexa)
+func getTokenFromHeaderProduct(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		return strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	return ""
 }
 
 func (h *ProductHandler) HandleSearchItems(w http.ResponseWriter, r *http.Request) {
@@ -46,24 +54,32 @@ func (h *ProductHandler) HandleSearchItems(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// 1. Extração do Token do Header
+	token := getTokenFromHeaderProduct(r)
+	if token == "" {
+		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. Validação de Segurança (Token e Sessão)
+	if _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	if err := h.Session.ValidateAndUpdate(token); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// 3. Decode do Body (apenas dados de busca agora)
 	var input searchItemsInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "JSON inválido", http.StatusBadRequest)
 		return
 	}
 
-	// 1. Validação de Segurança
-	if _, err := auth.ValidateToken(input.SessionToken, h.Config.JwtSecret); err != nil {
-		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	if err := h.Session.ValidateAndUpdate(input.SessionToken); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	// 2. Busca com Contexto
+	// 4. Busca com Contexto
 	rows, err := h.Client.SearchItems(ctx, input.CodArm, input.Filtro)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -74,7 +90,7 @@ func (h *ProductHandler) HandleSearchItems(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// 3. Retorna os dados
+	// 5. Retorna os dados
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(rows)
 }
@@ -89,6 +105,25 @@ func (h *ProductHandler) HandleGetItemDetails(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// 1. Extração do Token do Header
+	token := getTokenFromHeaderProduct(r)
+	if token == "" {
+		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. Segurança
+	if _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	if err := h.Session.ValidateAndUpdate(token); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// 3. Decode do Body
 	var input getItemDetailsInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "JSON inválido", http.StatusBadRequest)
@@ -105,18 +140,7 @@ func (h *ProductHandler) HandleGetItemDetails(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 1. Segurança
-	if _, err := auth.ValidateToken(input.SessionToken, h.Config.JwtSecret); err != nil {
-		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	if err := h.Session.ValidateAndUpdate(input.SessionToken); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	// 2. Busca com Contexto
+	// 4. Busca com Contexto
 	item, err := h.Client.GetItemDetails(ctx, input.CodArm, input.Sequencia)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -131,7 +155,7 @@ func (h *ProductHandler) HandleGetItemDetails(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 3. Retorna os dados
+	// 5. Retorna os dados
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(item)
 }
@@ -147,6 +171,25 @@ func (h *ProductHandler) HandleGetPickingLocations(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// 1. Extração do Token do Header
+	token := getTokenFromHeaderProduct(r)
+	if token == "" {
+		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. Segurança
+	if _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	if err := h.Session.ValidateAndUpdate(token); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// 3. Decode do Body
 	var input getPickingLocationsInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "JSON inválido", http.StatusBadRequest)
@@ -159,18 +202,7 @@ func (h *ProductHandler) HandleGetPickingLocations(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// 1. Segurança
-	if _, err := auth.ValidateToken(input.SessionToken, h.Config.JwtSecret); err != nil {
-		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	if err := h.Session.ValidateAndUpdate(input.SessionToken); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	// 2. Busca com Contexto
+	// 4. Busca com Contexto
 	locations, err := h.Client.GetPickingLocations(ctx, input.CodArm, input.CodProd, input.Sequencia)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -181,7 +213,7 @@ func (h *ProductHandler) HandleGetPickingLocations(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// 3. Retorna os dados
+	// 5. Retorna os dados
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(locations)
 }
