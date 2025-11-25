@@ -17,7 +17,7 @@ type TransactionInput struct {
 	CodUsu  int
 }
 
-// Helpers para conversão segura de tipos (Evita Panic)
+// Helpers para conversão segura de tipos
 func safeFloat64(v any) float64 {
 	if v == nil {
 		return 0
@@ -152,6 +152,8 @@ func (c *Client) ExecuteTransaction(ctx context.Context, input TransactionInput,
 
 	if input.Type == "correcao" {
 		return c.handleCorrecao(ctx, input, snkSessionId)
+	} else if input.Type == "picking" {
+		return c.handlePicking(ctx, input, snkSessionId, perms)
 	} else {
 		return c.handleMovimentacao(ctx, input, snkSessionId, perms)
 	}
@@ -160,7 +162,6 @@ func (c *Client) ExecuteTransaction(ctx context.Context, input TransactionInput,
 // handleCorrecao trata a lógica específica de correção de estoque
 func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snkSessionId string) (string, error) {
 	payload := input.Payload
-	// Uso de safeFloat64 para evitar panic na conversão do JSON
 	codArm := int(safeFloat64(payload["codarm"]))
 	sequencia := int(safeFloat64(payload["sequencia"]))
 	newQuantity := safeFloat64(payload["newQuantity"])
@@ -184,7 +185,6 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	}
 	row := rows[0]
 
-	// Extração segura usando helpers
 	codProd := safeString(row[0])
 	codVol := safeString(row[1])
 	datEnt := safeString(row[2])
@@ -242,7 +242,7 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	return "Correção executada com sucesso!", nil
 }
 
-// getOriginData busca CODPROD e ENDPIC da origem no banco (System Token)
+// getOriginData busca CODPROD e ENDPIC da origem
 func (c *Client) getOriginData(ctx context.Context, codArm int, sequencia int) (string, string, error) {
 	sql := fmt.Sprintf(`SELECT CODPROD, ENDPIC FROM AD_CADEND WHERE CODARM = %d AND SEQEND = %d`, codArm, sequencia)
 	rows, err := c.executeQuery(ctx, sql)
@@ -253,18 +253,193 @@ func (c *Client) getOriginData(ctx context.Context, codArm int, sequencia int) (
 		return "", "", fmt.Errorf("item de origem não encontrado no estoque")
 	}
 
-	// CORREÇÃO: Uso de safeFloat64 para evitar panic se CODPROD for null/incompatível
 	codProd := fmt.Sprintf("%.0f", safeFloat64(rows[0][0]))
 	endPic := safeString(rows[0][1])
 
 	return codProd, endPic, nil
 }
 
-// handleMovimentacao trata Baixa, Transferência e Picking
+// handlePicking: Lógica exclusiva para Picking (Desacoplada)
+func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkSessionId string, perms *UserPermissions) (string, error) {
+	payload := input.Payload
+
+	// 1. Parse Origem
+	var origemCodArm, origemSeq int
+	if origemMap, ok := payload["origem"].(map[string]any); ok {
+		origemCodArm = int(safeFloat64(origemMap["codarm"]))
+		origemSeq = int(safeFloat64(origemMap["sequencia"]))
+	} else {
+		return "", fmt.Errorf("payload inválido: origem não encontrada")
+	}
+
+	// 2. Parse Destino
+	var destCodArm int
+	var destSeq string
+	var destQtd float64
+	if destMap, ok := payload["destino"].(map[string]any); ok {
+		destCodArm = int(safeFloat64(destMap["armazemDestino"]))
+		destSeq = safeString(destMap["enderecoDestino"])
+		destQtd = safeFloat64(destMap["quantidade"])
+	} else {
+		return "", fmt.Errorf("payload inválido: destino não encontrado")
+	}
+
+	// 3. Validação da Origem (Server-Side)
+	serverCodProd, serverEndPic, err := c.getOriginData(ctx, origemCodArm, origemSeq)
+	if err != nil {
+		return "", err
+	}
+
+	if serverEndPic == "S" && !perms.BxaPick {
+		return "", fmt.Errorf("permissão negada: origem é Picking e usuário não tem permissão BXAPICK")
+	}
+
+	// 4. Validação e Consulta do Destino (Server-Side)
+	// Buscamos QTDPRO também para poder fazer a baixa se necessário
+	sqlDest := fmt.Sprintf("SELECT CODPROD, QTDPRO FROM AD_CADEND WHERE CODARM = %d AND SEQEND = '%s'", destCodArm, sanitizeStringForSql(destSeq))
+	rowsDest, err := c.executeQuery(ctx, sqlDest)
+	if err != nil {
+		return "", fmt.Errorf("erro ao consultar destino: %w", err)
+	}
+
+	// Lista de registros para salvar em AD_IBXEND (Itens da transação)
+	records := []DatasetRecord{}
+	fmtQtd := func(v float64) string { return fmt.Sprintf("%.3f", v) }
+
+	// 5. Cria Cabeçalho (AD_BXAEND)
+	hoje := time.Now().Format("02/01/2006")
+	headerBody := DatasetSaveBody{
+		EntityName: "AD_BXAEND",
+		Fields:     []string{"SEQBAI", "DATGER", "USUGER"},
+		Records: []DatasetRecord{{
+			Values: map[string]string{
+				"1": hoje,
+				"2": strconv.Itoa(input.CodUsu),
+			},
+		}},
+	}
+
+	resHeader, err := c.ExecuteServiceWithCookie(ctx, "DatasetSP.save", headerBody, snkSessionId)
+	if err != nil {
+		return "", fmt.Errorf("falha ao criar cabeçalho: %w", err)
+	}
+	if len(resHeader.ResponseBody.Result) == 0 || len(resHeader.ResponseBody.Result[0]) == 0 {
+		return "", fmt.Errorf("não retornou SEQBAI")
+	}
+	seqBai := resHeader.ResponseBody.Result[0][0]
+
+	// 6. Lógica de Limpeza (Baixa) do Destino
+	if len(rowsDest) > 0 {
+		destProd := fmt.Sprintf("%.0f", safeFloat64(rowsDest[0][0]))
+		destCurrentQtd := safeFloat64(rowsDest[0][1])
+
+		// Se o destino tem produto e é o MESMO da origem, fazemos a baixa para "limpar" (zerar para repor)
+		// Se for diferente, bloqueamos (regra de negócio para evitar mistura)
+		if destProd != "0" {
+			if destProd == serverCodProd {
+				// Gera registro de BAIXA (Saída) do que já existe no destino
+				records = append(records, DatasetRecord{
+					Values: map[string]string{
+						"0": seqBai,
+						"1": fmt.Sprintf("%d", destCodArm),
+						"2": destSeq,
+						"3": "", // Destino nulo = Baixa
+						"4": "",
+						"5": fmtQtd(destCurrentQtd),
+						"6": "S",
+					},
+				})
+			} else {
+				return "", fmt.Errorf("operação negada: endereço de destino contém produto diferente (%s) da origem (%s)", destProd, serverCodProd)
+			}
+		}
+	}
+
+	// 7. Lógica de Transferência (Origem -> Destino)
+	records = append(records, DatasetRecord{
+		Values: map[string]string{
+			"0": seqBai,
+			"1": fmt.Sprintf("%d", origemCodArm),
+			"2": fmt.Sprintf("%d", origemSeq),
+			"3": fmt.Sprintf("%d", destCodArm),
+			"4": destSeq,
+			"5": fmtQtd(destQtd),
+			"6": "S",
+		},
+	})
+
+	// 8. Salva Itens (AD_IBXEND)
+	itemsBody := DatasetSaveBody{
+		EntityName: "AD_IBXEND",
+		Fields:     []string{"SEQBAI", "CODARM", "SEQEND", "ARMDES", "ENDDES", "QTDPRO", "APP"},
+		StandAlone: false,
+		Records:    records,
+	}
+
+	_, err = c.ExecuteServiceWithCookie(ctx, "DatasetSP.save", itemsBody, snkSessionId)
+	if err != nil {
+		return "", fmt.Errorf("erro ao salvar itens de picking: %w", err)
+	}
+
+	// 9. Define Destino como Picking (ENDPIC = 'S')
+	updateBody := DatasetSaveBody{
+		EntityName: "CADEND",
+		StandAlone: false,
+		Fields:     []string{"CODARM", "SEQEND", "ENDPIC"},
+		Records: []DatasetRecord{{
+			PK: map[string]string{
+				"CODARM": fmt.Sprintf("%d", destCodArm),
+				"SEQEND": destSeq,
+			},
+			Values: map[string]string{"2": "S"}, // Define ENDPIC='S'
+		}},
+	}
+	c.ExecuteServiceWithCookie(ctx, "DatasetSP.save", updateBody, snkSessionId)
+	// Erros aqui não são críticos para travar a movimentação, mas idealmente logaríamos warning
+
+	// 10. Polling
+	populated := false
+	for i := 0; i < 10; i++ {
+		time.Sleep(500 * time.Millisecond)
+		sqlPoll := fmt.Sprintf("SELECT COUNT(*) FROM AD_IBXEND WHERE SEQBAI = %s AND CODPROD IS NOT NULL", seqBai)
+		rows, err := c.executeQuery(ctx, sqlPoll)
+		if err == nil && len(rows) > 0 {
+			count := int(safeFloat64(rows[0][0]))
+			if count >= len(records) {
+				populated = true
+				break
+			}
+		}
+	}
+	if !populated {
+		return "", fmt.Errorf("timeout: sistema não processou o picking a tempo")
+	}
+
+	// 11. Finaliza
+	stpBody := ExecuteSTPBody{}
+	stpBody.StpCall.ActionID = "20"
+	stpBody.StpCall.ProcName = "NIC_STP_BAIXA_END"
+	stpBody.StpCall.RootEntity = "AD_BXAEND"
+	stpBody.StpCall.Rows.Row = []ScriptRow{{
+		Field: []ScriptField{{FieldName: "SEQBAI", Value: seqBai}},
+	}}
+
+	resp, err := c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", stpBody, snkSessionId)
+	if err != nil {
+		return "", fmt.Errorf("erro na procedure final: %w", err)
+	}
+
+	if resp.StatusMessage != "" {
+		return resp.StatusMessage, nil
+	}
+	return "Picking realizado com sucesso!", nil
+}
+
+// handleMovimentacao: Baixa e Transferência (Sem Picking)
 func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput, snkSessionId string, perms *UserPermissions) (string, error) {
 	payload := input.Payload
 
-	// --- VALIDAÇÃO E ENRIQUECIMENTO (Server-Side) ---
+	// Validação e Busca de Dados da Origem (Server-Side)
 	var origemCodArm, origemSeq int
 	if origemMap, ok := payload["origem"].(map[string]any); ok {
 		origemCodArm = int(safeFloat64(origemMap["codarm"]))
@@ -273,16 +448,14 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		return "", fmt.Errorf("payload inválido: dados de origem não encontrados")
 	}
 
-	// Busca CODPROD e ENDPIC direto do banco
 	serverCodProd, serverEndPic, err := c.getOriginData(ctx, origemCodArm, origemSeq)
 	if err != nil {
 		return "", err
 	}
 
 	if serverEndPic == "S" && !perms.BxaPick {
-		return "", fmt.Errorf("permissão negada: você não tem permissão para movimentar/baixar itens de um endereço de Picking")
+		return "", fmt.Errorf("permissão negada: origem é Picking e usuário não tem permissão BXAPICK")
 	}
-	// ---------------------------------------------
 
 	hoje := time.Now().Format("02/01/2006")
 	headerBody := DatasetSaveBody{
@@ -300,21 +473,16 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 	if err != nil {
 		return "", fmt.Errorf("falha ao criar cabeçalho: %w", err)
 	}
-
 	if len(resHeader.ResponseBody.Result) == 0 || len(resHeader.ResponseBody.Result[0]) == 0 {
 		return "", fmt.Errorf("não retornou SEQBAI")
 	}
 	seqBai := resHeader.ResponseBody.Result[0][0]
 
 	records := []DatasetRecord{}
-
-	fmtQtd := func(v any) string {
-		return fmt.Sprintf("%.3f", safeFloat64(v)) // Uso seguro
-	}
+	fmtQtd := func(v any) string { return fmt.Sprintf("%.3f", safeFloat64(v)) }
 
 	if input.Type == "baixa" {
 		qtd := payload["quantidade"]
-
 		records = append(records, DatasetRecord{
 			Values: map[string]string{
 				"0": seqBai,
@@ -327,23 +495,23 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 			},
 		})
 	} else {
+		// Transferência
 		destino := payload["destino"].(map[string]any)
 		destCodArm := int(safeFloat64(destino["armazemDestino"]))
 		destSeq := safeString(destino["enderecoDestino"])
 		destQtdUser := destino["quantidade"]
 
-		// Verifica destino (System Token) para Consolidação (Merge)
+		// Verifica destino para Consolidação (Merge)
 		sqlDest := fmt.Sprintf("SELECT CODPROD, QTDPRO FROM AD_CADEND WHERE SEQEND = '%s' AND CODARM = %d",
 			sanitizeStringForSql(destSeq), destCodArm)
 
 		rowsDest, _ := c.executeQuery(ctx, sqlDest)
 
 		if len(rowsDest) > 0 {
-			// CORREÇÃO: Extração segura dos dados do destino para evitar panic
 			destProd := fmt.Sprintf("%.0f", safeFloat64(rowsDest[0][0]))
 			destQtd := safeFloat64(rowsDest[0][1])
 
-			// Se destino tem MESMO PRODUTO (validado pelo server), baixa ele primeiro
+			// Se mesmo produto, baixa destino primeiro (Merge)
 			if destProd == serverCodProd {
 				records = append(records, DatasetRecord{
 					Values: map[string]string{
@@ -359,7 +527,7 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 			}
 		}
 
-		// Item Principal
+		// Item Principal (Origem -> Destino)
 		records = append(records, DatasetRecord{
 			Values: map[string]string{
 				"0": seqBai,
@@ -372,6 +540,7 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 			},
 		})
 
+		// Marca destino como picking (Transferência apenas)
 		createPick, _ := destino["criarPick"].(bool)
 		if input.Type == "transferencia" && createPick && perms.CriaPick {
 			updateBody := DatasetSaveBody{
@@ -403,14 +572,13 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		}
 	}
 
-	// Polling
 	populated := false
 	for i := 0; i < 10; i++ {
 		time.Sleep(500 * time.Millisecond)
 		sqlPoll := fmt.Sprintf("SELECT COUNT(*) FROM AD_IBXEND WHERE SEQBAI = %s AND CODPROD IS NOT NULL", seqBai)
 		rows, err := c.executeQuery(ctx, sqlPoll)
 		if err == nil && len(rows) > 0 {
-			count := int(safeFloat64(rows[0][0])) // Conversão segura
+			count := int(safeFloat64(rows[0][0]))
 			if count >= len(records) {
 				populated = true
 				break
