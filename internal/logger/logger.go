@@ -1,13 +1,14 @@
 package logger
 
 import (
-	"io"
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 	"zenith-go/internal/config"
 
+	"github.com/lmittmann/tint"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -19,35 +20,28 @@ func Init(cfg *config.Config) {
 		panic("não foi possível criar diretório de logs: " + err.Error())
 	}
 
-	// Lógica de Precedência e Defaults:
-	// 1. Se o usuário definiu LOG_MAX_SIZE_MB, usa. Caso contrário, padrão é 100MB.
-	// 2. Se o usuário definiu LOG_MAX_AGE_DAYS, usa. Caso contrário, 0 (Lumberjack não remove por idade).
-	
-	maxSize := 100 // Default padrão exigido: 100MB
+	maxSize := 100
 	if cfg.LogMaxSize > 0 {
 		maxSize = cfg.LogMaxSize
 	}
 
-	maxAge := 0 // Default: sem limite de dias (controlado apenas por tamanho/backups)
+	maxAge := 0
 	if cfg.LogMaxAge > 0 {
 		maxAge = cfg.LogMaxAge
 	}
 
-	// Configuração do Lumberjack para rotação
+	// 1. Configuração do Arquivo (JSON Estruturado - Máquina)
 	fileWriter := &lumberjack.Logger{
 		Filename:   filepath.Join(logDir, "zenith.log"),
-		MaxSize:    maxSize,    // MB
-		MaxAge:     maxAge,     // Dias
-		MaxBackups: 5,          // Mantém até 5 arquivos antigos rotacionados
-		Compress:   true,       // Comprimir arquivos antigos (.gz)
-		LocalTime:  true,       // Usa horário local no nome do arquivo
+		MaxSize:    maxSize,
+		MaxAge:     maxAge,
+		MaxBackups: 5,
+		Compress:   true,
+		LocalTime:  true,
 	}
 
-	// MultiWriter: Escreve no Arquivo E no Console
-	multiWriter := io.MultiWriter(os.Stdout, fileWriter)
-
-	// Handler JSON Estruturado
-	handlerOpts := &slog.HandlerOptions{
+	// Opções para o arquivo (JSON completo com timestamp ISO)
+	fileHandler := slog.NewJSONHandler(fileWriter, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.TimeKey {
@@ -58,14 +52,74 @@ func Init(cfg *config.Config) {
 			}
 			return a
 		},
-	}
+	})
 
-	logger := slog.New(slog.NewJSONHandler(multiWriter, handlerOpts))
+	// 2. Configuração do Console (Tint - Humano/Colorido)
+	consoleHandler := tint.NewHandler(os.Stdout, &tint.Options{
+		Level:      slog.LevelDebug,
+		TimeFormat: time.TimeOnly, // Mostra apenas 15:04:05 (mais limpo)
+		AddSource:  false,         // Não polui o terminal com o nome do arquivo fonte
+	})
+
+	// 3. Unifica os dois (Fanout)
+	multiHandler := NewFanoutHandler(consoleHandler, fileHandler)
+
+	// Define como logger padrão
+	logger := slog.New(multiHandler)
 	slog.SetDefault(logger)
 
 	slog.Info("Sistema de logs inicializado",
-		slog.String("dir", logDir),
-		slog.Int("max_size_mb", maxSize),
-		slog.Int("max_age_days", maxAge),
+		"dir", logDir,
+		"mode", "Hybrid (Pretty Console + JSON File)",
 	)
+}
+
+// --- Fanout Handler (Distribui o log para múltiplos handlers) ---
+
+type FanoutHandler struct {
+	handlers []slog.Handler
+}
+
+func NewFanoutHandler(handlers ...slog.Handler) *FanoutHandler {
+	return &FanoutHandler{handlers: handlers}
+}
+
+// Enabled reporta se o nível está habilitado (se qualquer um dos handlers aceitar)
+func (h *FanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, handler := range h.handlers {
+		if handler.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+// Handle despacha o record para todos os handlers
+func (h *FanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, handler := range h.handlers {
+		if handler.Enabled(ctx, r.Level) {
+			// O método Handle pode modificar o record, então é seguro clonar se necessário,
+			// mas o slog.Record é passado por valor, então geralmente é seguro.
+			_ = handler.Handle(ctx, r)
+		}
+	}
+	return nil
+}
+
+// WithAttrs retorna um novo FanoutHandler com atributos adicionados a todos os filhos
+func (h *FanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newHandlers := make([]slog.Handler, len(h.handlers))
+	for i, handler := range h.handlers {
+		newHandlers[i] = handler.WithAttrs(attrs)
+	}
+	return NewFanoutHandler(newHandlers...)
+}
+
+// WithGroup retorna um novo FanoutHandler com grupo adicionado a todos os filhos
+func (h *FanoutHandler) WithGroup(name string) slog.Handler {
+	newHandlers := make([]slog.Handler, len(h.handlers))
+	for i, handler := range h.handlers {
+		newHandlers[i] = handler.WithGroup(name)
+	}
+	return NewFanoutHandler(newHandlers...)
 }
