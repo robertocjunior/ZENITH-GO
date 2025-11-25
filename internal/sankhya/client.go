@@ -130,6 +130,12 @@ type SearchItemResult struct {
 	Derivacao   string  `json:"derivacao"`
 }
 
+// PickingLocation define o resultado da rota get-picking-locations
+type PickingLocation struct {
+	SeqEnd    int    `json:"seqEnd"`
+	DescrProd string `json:"descrProd"`
+}
+
 // Client estrutura principal
 type Client struct {
 	cfg         *config.Config
@@ -206,7 +212,7 @@ func (c *Client) GetToken(ctx context.Context) (string, error) {
 	return c.bearerToken, nil
 }
 
-// executeQuery - REVERTIDO: Removemos params para garantir compatibilidade
+// executeQuery executa SQL
 func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) {
 	sysToken, err := c.GetToken(ctx)
 	if err != nil {
@@ -247,9 +253,8 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	return result.ResponseBody.Rows, nil
 }
 
-// VerifyUserAccess - REVERTIDO: Uso de Sprintf com Sanitização
+// VerifyUserAccess
 func (c *Client) VerifyUserAccess(ctx context.Context, username string) (float64, error) {
-	// Sanitiza o input antes de concatenar
 	safeUsername := sanitizeStringForSql(strings.ToUpper(username))
 
 	sqlQuery := fmt.Sprintf(`
@@ -282,7 +287,7 @@ func (c *Client) VerifyUserAccess(ctx context.Context, username string) (float64
 	return codUsu, nil
 }
 
-// VerifyDevice - REVERTIDO: Uso de Sprintf
+// VerifyDevice
 func (c *Client) VerifyDevice(ctx context.Context, codUsu int, deviceToken string) error {
 	safeToken := sanitizeStringForSql(deviceToken)
 	
@@ -353,7 +358,7 @@ func (c *Client) registerDevice(ctx context.Context, token string, codUsu int, d
 	return nil
 }
 
-// GetUserPermissions - REVERTIDO: Uso de Sprintf
+// GetUserPermissions
 func (c *Client) GetUserPermissions(ctx context.Context, codUsu int) (*UserPermissions, error) {
 	sqlQuery := fmt.Sprintf(`
 		SELECT 
@@ -424,7 +429,7 @@ func (c *Client) LoginUser(ctx context.Context, username, password string) (stri
 	return result.ResponseBody.JSessionID.Value, nil
 }
 
-// GetItemDetails - REVERTIDO: Uso de Sprintf
+// GetItemDetails
 func (c *Client) GetItemDetails(ctx context.Context, codArm int, sequencia string) (*ItemDetail, error) {
 	safeSeq := sanitizeStringForSql(sequencia)
 	sql := fmt.Sprintf(`SELECT * FROM V_WMS_ITEM_DETALHES WHERE CODARM = %d AND SEQEND = '%s'`, codArm, safeSeq)
@@ -476,7 +481,47 @@ func (c *Client) GetItemDetails(ctx context.Context, codArm int, sequencia strin
 	return item, nil
 }
 
-// SearchItems - REVERTIDO: Uso de String Builder com Sanitização
+// GetPickingLocations busca locais de picking alternativos
+func (c *Client) GetPickingLocations(ctx context.Context, codArm int, codProd int, sequenciaExclude int) ([]PickingLocation, error) {
+	// Como os parâmetros são inteiros, %d é seguro contra injeção de SQL
+	sql := fmt.Sprintf(`
+		SELECT ENDE.SEQEND, PRO.DESCRPROD 
+		FROM AD_CADEND ENDE 
+		JOIN TGFPRO PRO ON ENDE.CODPROD = PRO.CODPROD 
+		WHERE ENDE.CODARM = %d 
+		AND ENDE.CODPROD = %d 
+		AND ENDE.ENDPIC = 'S' 
+		AND ENDE.SEQEND <> %d 
+		ORDER BY ENDE.SEQEND`, codArm, codProd, sequenciaExclude)
+
+	rows, err := c.executeQuery(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []PickingLocation
+	for _, row := range rows {
+		// Helper para extração segura
+		getInt := func(i int) int {
+			if i >= len(row) || row[i] == nil { return 0 }
+			if f, ok := row[i].(float64); ok { return int(f) }
+			return 0
+		}
+		getString := func(i int) string {
+			if i >= len(row) || row[i] == nil { return "" }
+			return fmt.Sprintf("%v", row[i])
+		}
+
+		results = append(results, PickingLocation{
+			SeqEnd:    getInt(0),
+			DescrProd: getString(1),
+		})
+	}
+	
+	return results, nil
+}
+
+// SearchItems
 func (c *Client) SearchItems(ctx context.Context, codArm int, filtro string) ([]SearchItemResult, error) {
 	var sqlBuilder strings.Builder
 	

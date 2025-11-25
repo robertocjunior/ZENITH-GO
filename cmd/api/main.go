@@ -79,7 +79,8 @@ func main() {
 
 	// --- Rotas de Produto ---
 	mux.HandleFunc("/apiv1/search-items", productHandler.HandleSearchItems)
-	mux.HandleFunc("/apiv1/get-item-details", productHandler.HandleGetItemDetails) // Nova rota adicionada
+	mux.HandleFunc("/apiv1/get-item-details", productHandler.HandleGetItemDetails)
+	mux.HandleFunc("/apiv1/get-picking-locations", productHandler.HandleGetPickingLocations) // Nova rota adicionada
 
 	log.Println("Servidor rodando na porta :8080")
 	
