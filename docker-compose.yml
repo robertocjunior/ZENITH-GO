@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  zenith-app:
+    container_name: zenith-go-api
+    build:
+      # APONTA DIRETO PARA SEU REPOSITÓRIO GIT
+      # Se for privado, você precisará configurar credenciais SSH no host ou usar tokens
+      context: https://github.com/robertocjunior/zenith-go.git#main
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8080:8080"
+    
+    # Carrega as variáveis do seu arquivo .env local para dentro do container
+    env_file:
+      - .env
+    
+    # Persistência de Logs
+    # Mapeia a pasta 'logs' do container para a pasta 'logs_host' na máquina atual
+    volumes:
+      - ./logs_host:/root/logs
+    
+    # Configurações de Rede e Limits (Opcional, para produção)
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
