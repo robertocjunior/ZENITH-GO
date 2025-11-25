@@ -79,3 +79,11 @@ func (sm *SessionManager) Revoke(token string) {
 	// Não precisamos tratar erro no logout, apenas tentar apagar
 	sm.client.Del(ctx, "session:"+token)
 }
+
+// CountActiveSessions retorna o número de chaves de sessão no Redis
+func (sm *SessionManager) CountActiveSessions() (int64, error) {
+	ctx := context.Background()
+	// Usamos DBSize como aproximação rápida. 
+	// Se o DB for compartilhado, usar: sm.client.Keys(ctx, "session:*").Result() (mais lento)
+	return sm.client.DBSize(ctx).Result()
+}

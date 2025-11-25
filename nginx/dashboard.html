@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Zenith Cluster Monitor</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: #e0e0e0; padding: 20px; }
+        h1 { color: #00add8; text-align: center; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 20px; }
+        .card { background: #2d2d2d; padding: 20px; border-radius: 8px; border-left: 5px solid #4caf50; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .card.offline { border-left-color: #f44336; opacity: 0.6; }
+        .stat { display: flex; justify-content: space-between; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; }
+        .stat-label { color: #888; }
+        .stat-val { font-weight: bold; }
+        .redis-card { border-left-color: #ff5722; }
+        #total-sessions { font-size: 2em; text-align: center; display: block; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>🚀 Zenith-Go Cluster Monitor</h1>
+    
+    <div class="grid">
+        <div class="card redis-card">
+            <h3>Global State (Redis)</h3>
+            <span id="total-sessions">0</span>
+            <div style="text-align: center; color: #aaa;">Active User Sessions</div>
+        </div>
+        <div class="card" style="border-left-color: #00add8;">
+            <h3>Load Balancer</h3>
+            <div class="stat"><span class="stat-label">Detected Nodes:</span> <span class="stat-val" id="node-count">0</span></div>
+            <div class="stat"><span class="stat-label">Status:</span> <span class="stat-val" style="color:#4caf50">Online</span></div>
+        </div>
+    </div>
+
+    <h2 style="margin-top: 40px;">API Nodes (Live)</h2>
+    <div id="nodes-container" class="grid"></div>
+
+    <script>
+        const nodes = {}; // Armazena o estado dos nós conhecidos
+
+        async function fetchStats() {
+            try {
+                // Faz requisição ao Load Balancer. Ele vai entregar para UM dos nós.
+                const res = await fetch('/apiv1/health');
+                const data = await res.json();
+
+                // Atualiza ou cria o nó na lista
+                nodes[data.node_id] = { ...data, lastSeen: Date.now() };
+                
+                renderNodes();
+                updateGlobalStats(data.active_sessions);
+
+            } catch (e) {
+                console.error("Erro ao buscar stats", e);
+            }
+        }
+
+        function renderNodes() {
+            const container = document.getElementById('nodes-container');
+            container.innerHTML = '';
+            let activeCount = 0;
+
+            // Ordena nós por nome
+            Object.keys(nodes).sort().forEach(id => {
+                const node = nodes[id];
+                const isLive = (Date.now() - node.lastSeen) < 5000; // Considera offline se não responder em 5s (assumindo polling rápido)
+                if (isLive) activeCount++;
+
+                const html = `
+                    <div class="card ${isLive ? '' : 'offline'}">
+                        <h3>📦 ${node.node_id}</h3>
+                        <div class="stat"><span class="stat-label">Status:</span> <span class="stat-val" style="color:${isLive ? '#4caf50':'#f44336'}">${isLive ? 'ONLINE' : 'OFFLINE'}</span></div>
+                        <div class="stat"><span class="stat-label">Uptime:</span> <span class="stat-val">${node.uptime}</span></div>
+                        <div class="stat"><span class="stat-label">Memory:</span> <span class="stat-val">${node.memory_usage_mb} MB</span></div>
+                        <div class="stat"><span class="stat-label">Goroutines:</span> <span class="stat-val">${node.goroutines}</span></div>
+                        <div class="stat"><span class="stat-label">Redis Link:</span> <span class="stat-val">${node.redis_status}</span></div>
+                        <div style="font-size:0.8em; color:#666; margin-top:10px;">Last seen: ${new Date(node.lastSeen).toLocaleTimeString()}</div>
+                    </div>
+                `;
+                container.innerHTML += html;
+            });
+            
+            document.getElementById('node-count').innerText = activeCount;
+        }
+
+        function updateGlobalStats(sessions) {
+            document.getElementById('total-sessions').innerText = sessions;
+        }
+
+        // Polling agressivo (500ms) para "bater" em todos os nós rapidamente através do Round-Robin do Nginx
+        setInterval(fetchStats, 500);
+        // Limpeza de visualização a cada segundo
+        setInterval(renderNodes, 1000);
+    </script>
+</body>
+</html>

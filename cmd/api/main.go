@@ -82,7 +82,7 @@ func main() {
 		panic(err)
 	}
 
-	// 2. Inicializa Logger (Híbrido: JSON no arquivo, Colorido no terminal)
+	// 2. Inicializa Logger
 	logger.Init(cfg)
 	slog.Info("Configurações carregadas", "api_url", cfg.ApiUrl)
 
@@ -127,6 +127,10 @@ func main() {
 		JwtSecret: cfg.JwtSecret,
 	}
 
+	healthHandler := &handler.HealthHandler{
+		Session: sessionManager,
+	}
+
 	// 6. Configura Rotas
 	mux := http.NewServeMux()
 
@@ -143,6 +147,9 @@ func main() {
 
 	// Transações
 	mux.HandleFunc("/apiv1/execute-transaction", transactionHandler.HandleExecuteTransaction)
+
+	// Monitoramento e Saúde (NOVO)
+	mux.HandleFunc("/apiv1/health", healthHandler.HandleHealthCheck)
 
 	// Aplica Middlewares
 	finalHandler := loggingMiddleware(securityMiddleware(mux))
