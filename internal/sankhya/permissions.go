@@ -1,7 +1,10 @@
 package sankhya
 
-import "fmt"
-import "context"
+import (
+	"context"
+	"fmt"
+	"log/slog"
+)
 
 func (c *Client) GetUserPermissions(ctx context.Context, codUsu int) (*UserPermissions, error) {
 	sqlQuery := fmt.Sprintf(`
@@ -20,11 +23,14 @@ func (c *Client) GetUserPermissions(ctx context.Context, codUsu int) (*UserPermi
 		return nil, err
 	}
 	if len(rows) == 0 {
+		slog.Warn("Usuário sem configuração de permissões", "codusu", codUsu)
 		return nil, fmt.Errorf("permissões não encontradas")
 	}
 
 	row := rows[0]
 	toBool := func(val any) bool { return val.(string) == "S" }
+
+	slog.Debug("Permissões carregadas", "codusu", codUsu)
 
 	return &UserPermissions{
 		ListaCodigos: fmt.Sprintf("%v", row[0]),

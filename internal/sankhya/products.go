@@ -3,6 +3,7 @@ package sankhya
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -60,7 +61,7 @@ func (c *Client) GetItemDetails(ctx context.Context, codArm int, sequencia strin
 	return item, nil
 }
 
-// GetPickingLocations busca locais de picking alternativos (Retorna Map)
+// GetPickingLocations busca locais de picking alternativos
 func (c *Client) GetPickingLocations(ctx context.Context, codArm int, codProd int, sequenciaExclude int) (map[string]PickingLocation, error) {
 	sql := fmt.Sprintf(`
 		SELECT ENDE.SEQEND, PRO.DESCRPROD 
@@ -98,6 +99,7 @@ func (c *Client) GetPickingLocations(ctx context.Context, codArm int, codProd in
 		}
 	}
 	
+	slog.Debug("Locais de picking encontrados", "count", len(results))
 	return results, nil
 }
 
@@ -309,5 +311,6 @@ func (c *Client) GetHistory(ctx context.Context, dtIni string, dtFim string, cod
 		})
 	}
 	
+	slog.Debug("Histórico retornado", "count", len(results))
 	return results, nil
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -33,6 +34,8 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	slog.Info("Autenticando Sistema (Service Account) no Sankhya...")
+
 	url := fmt.Sprintf("%s/login", c.cfg.ApiUrl)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
@@ -46,11 +49,13 @@ func (c *Client) Authenticate(ctx context.Context) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		slog.Error("Falha na requisição de login do sistema", "error", err)
 		return fmt.Errorf("falha na requisição de login: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		slog.Error("Login do sistema falhou", "status", resp.StatusCode)
 		return fmt.Errorf("login falhou com status: %d", resp.StatusCode)
 	}
 
@@ -66,7 +71,7 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	c.bearerToken = result.BearerToken
 	c.tokenExpiry = time.Now().Add(4*time.Minute + 50*time.Second)
 
-	fmt.Println(">>> Autenticação no Sankhya realizada com sucesso!")
+	slog.Info("Autenticação do sistema renovada com sucesso", "expiry", c.tokenExpiry)
 	return nil
 }
 
@@ -80,6 +85,8 @@ func (c *Client) GetToken(ctx context.Context) (string, error) {
 	}
 	c.mu.RUnlock()
 
+	// Se expirou, renova
+	slog.Info("Token de sistema expirado ou inexistente. Renovando...")
 	if err := c.Authenticate(ctx); err != nil {
 		return "", err
 	}
@@ -116,6 +123,8 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	req.Header.Set("Authorization", "Bearer "+sysToken)
 	req.Header.Set("Content-Type", "application/json")
 
+	// slog.Debug("Executando SQL", "sql_prefix", sql[:min(len(sql), 50)]+"...") // Debug de SQL (opcional, pode poluir)
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -127,10 +136,21 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 		return nil, fmt.Errorf("erro decodificando query: %w", err)
 	}
 
+	if result.Status != "1" {
+		slog.Error("Erro na execução de SQL", "status", result.Status)
+		return nil, fmt.Errorf("erro no DbExplorerSP status: %s", result.Status)
+	}
+
 	return result.ResponseBody.Rows, nil
 }
 
-// sanitizeStringForSql remove aspas simples para evitar injeção básica
 func sanitizeStringForSql(s string) string {
 	return strings.ReplaceAll(s, "'", "")
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

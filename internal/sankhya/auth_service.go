@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,8 +14,9 @@ import (
 
 // VerifyUserAccess valida se o usuário existe e tem permissão de app
 func (c *Client) VerifyUserAccess(ctx context.Context, username string) (float64, error) {
+	slog.Debug("Verificando acesso do usuário", "username", username)
+	
 	safeUsername := sanitizeStringForSql(strings.ToUpper(username))
-
 	sqlQuery := fmt.Sprintf(`
 		SELECT 
 			U.CODUSU, 
@@ -31,6 +33,7 @@ func (c *Client) VerifyUserAccess(ctx context.Context, username string) (float64
 	}
 
 	if len(rows) == 0 {
+		slog.Info("Usuário não encontrado", "username", username)
 		return 0, ErrUserNotFound
 	}
 
@@ -39,6 +42,7 @@ func (c *Client) VerifyUserAccess(ctx context.Context, username string) (float64
 	permitido := row[1].(string)
 
 	if permitido != "TRUE" {
+		slog.Warn("Usuário sem permissão AD_APPPERM", "username", username, "codusu", codUsu)
 		return 0, ErrUserNotAuthorized
 	}
 
@@ -48,7 +52,6 @@ func (c *Client) VerifyUserAccess(ctx context.Context, username string) (float64
 // VerifyDevice verifica se o dispositivo está autorizado
 func (c *Client) VerifyDevice(ctx context.Context, codUsu int, deviceToken string) error {
 	safeToken := sanitizeStringForSql(deviceToken)
-	
 	sqlQuery := fmt.Sprintf(`
 		SELECT DEVICETOKEN, CODUSU, ATIVO 
 		FROM AD_DISPAUT 
@@ -60,6 +63,7 @@ func (c *Client) VerifyDevice(ctx context.Context, codUsu int, deviceToken strin
 	}
 
 	if len(rows) == 0 {
+		slog.Info("Novo dispositivo detectado, registrando...", "codusu", codUsu, "device", deviceToken)
 		sysToken, _ := c.GetToken(ctx)
 		if regErr := c.registerDevice(ctx, sysToken, codUsu, deviceToken); regErr != nil {
 			return fmt.Errorf("erro ao registrar novo device: %w", regErr)
@@ -71,10 +75,12 @@ func (c *Client) VerifyDevice(ctx context.Context, codUsu int, deviceToken strin
 	if ativo == "S" {
 		return nil
 	}
+	
+	slog.Info("Dispositivo pendente de aprovação", "codusu", codUsu)
 	return ErrDevicePendingApproval
 }
 
-// registerDevice (Privado) registra um novo dispositivo
+// registerDevice (Privado)
 func (c *Client) registerDevice(ctx context.Context, token string, codUsu int, deviceToken string) error {
 	dhGer := time.Now().Format("02/01/2006")
 	reqBody := datasetSaveRequest{
@@ -117,7 +123,7 @@ func (c *Client) registerDevice(ctx context.Context, token string, codUsu int, d
 	return nil
 }
 
-// LoginUser realiza o login do usuário final (MobileLoginSP)
+// LoginUser realiza o login do usuário final
 func (c *Client) LoginUser(ctx context.Context, username, password string) (string, error) {
 	sysToken, err := c.GetToken(ctx)
 	if err != nil {
