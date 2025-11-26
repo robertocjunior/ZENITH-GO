@@ -52,7 +52,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/dashboard.html:/usr/share/nginx/html/dashboard.html:ro
     ports:
-      - "80:80" # Porta de entrada para o mundo
+      - "8080:80" # Porta de entrada para o mundo
     depends_on:
       - zenith-api-1
       - zenith-api-2
