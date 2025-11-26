@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io" // Adicionado
 	"log/slog"
 	"net/http"
 	"strings"
@@ -37,7 +38,8 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	slog.Info("Autenticando Sistema (Service Account) no Sankhya...")
 
 	url := fmt.Sprintf("%s/login", c.cfg.ApiUrl)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	// Sankhya as vezes exige um body vazio {} ao invés de nil
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer([]byte("{}")))
 	if err != nil {
 		return err
 	}
@@ -46,6 +48,7 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	req.Header.Set("appkey", c.cfg.AppKey)
 	req.Header.Set("username", c.cfg.Username)
 	req.Header.Set("password", c.cfg.Password)
+	req.Header.Set("Content-Type", "application/json") // Importante para algumas versões
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -55,8 +58,16 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		slog.Error("Login do sistema falhou", "status", resp.StatusCode)
-		return fmt.Errorf("login falhou com status: %d", resp.StatusCode)
+		// LÊ O CORPO DO ERRO PARA SABERMOS O MOTIVO
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		errorMsg := string(bodyBytes)
+		
+		slog.Error("Login do sistema falhou", 
+			"status", resp.StatusCode, 
+			"response", errorMsg,
+			"url", url,
+		)
+		return fmt.Errorf("login falhou com status %d: %s", resp.StatusCode, errorMsg)
 	}
 
 	var result loginResponse
@@ -65,7 +76,10 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	}
 
 	if result.BearerToken == "" {
-		return fmt.Errorf("token não retornado pelo ERP")
+		// Caso venha 200 OK mas com erro no JSON interno
+		jsonErr, _ := json.Marshal(result.Error)
+		slog.Error("Token não retornado", "sankhya_error", string(jsonErr))
+		return fmt.Errorf("token não retornado pelo ERP: %s", string(jsonErr))
 	}
 
 	c.bearerToken = result.BearerToken
@@ -129,13 +143,22 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	}
 	defer resp.Body.Close()
 
+	// Verificação básica de status HTTP antes de decodificar
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		slog.Error("Erro HTTP na query", "status", resp.StatusCode, "body", string(bodyBytes))
+		return nil, fmt.Errorf("erro HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
 	var result dbExplorerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("erro decodificando query: %w", err)
 	}
 
 	if result.Status != "1" {
-		slog.Error("Erro na execução de SQL", "status", result.Status)
+		// Loga o erro mas não retorna nil imediatamente para permitir tratamento superior se necessário,
+		// mas aqui retornamos erro para simplificar
+		slog.Error("Erro na execução de SQL (Sankhya)", "status", result.Status)
 		return nil, fmt.Errorf("erro no DbExplorerSP status: %s", result.Status)
 	}
 
