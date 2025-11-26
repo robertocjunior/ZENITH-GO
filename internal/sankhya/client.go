@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io" // Adicionado
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -30,7 +30,7 @@ func NewClient(cfg *config.Config) *Client {
 	}
 }
 
-// Authenticate realiza o login do SISTEMA (Service Account)
+// Authenticate realiza o login do SISTEMA (Service Account) com Retry
 func (c *Client) Authenticate(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -38,55 +38,76 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	slog.Info("Autenticando Sistema (Service Account) no Sankhya...")
 
 	url := fmt.Sprintf("%s/login", c.cfg.ApiUrl)
-	// Sankhya as vezes exige um body vazio {} ao invés de nil
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer([]byte("{}")))
-	if err != nil {
-		return err
-	}
+	maxRetries := 3
+	var lastErr error
 
-	req.Header.Set("token", c.cfg.Token)
-	req.Header.Set("appkey", c.cfg.AppKey)
-	req.Header.Set("username", c.cfg.Username)
-	req.Header.Set("password", c.cfg.Password)
-	req.Header.Set("Content-Type", "application/json") // Importante para algumas versões
+	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			time.Sleep(2 * time.Second)
+			slog.Info("Retentando login no Sankhya devido a erro anterior...", "tentativa", i+1)
+		}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		slog.Error("Falha na requisição de login do sistema", "error", err)
-		return fmt.Errorf("falha na requisição de login: %w", err)
-	}
-	defer resp.Body.Close()
+		// Recria o request a cada tentativa (pois o Body é consumido)
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer([]byte("{}")))
+		if err != nil {
+			return err
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		// LÊ O CORPO DO ERRO PARA SABERMOS O MOTIVO
+		req.Header.Set("token", c.cfg.Token)
+		req.Header.Set("appkey", c.cfg.AppKey)
+		req.Header.Set("username", c.cfg.Username)
+		req.Header.Set("password", c.cfg.Password)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("falha na rede durante login: %w", err)
+			slog.Warn("Erro de rede no login", "error", err)
+			continue
+		}
+
+		// Lê o corpo para diagnóstico
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		errorMsg := string(bodyBytes)
-		
-		slog.Error("Login do sistema falhou", 
-			"status", resp.StatusCode, 
-			"response", errorMsg,
-			"url", url,
-		)
-		return fmt.Errorf("login falhou com status %d: %s", resp.StatusCode, errorMsg)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("login falhou com status %d: %s", resp.StatusCode, string(bodyBytes))
+
+			// Se for erro 5xx (servidor), tenta novamente
+			if resp.StatusCode >= 500 {
+				slog.Warn("Erro interno do Sankhya (500), retentando...", "status", resp.StatusCode)
+				continue
+			}
+
+			// Se for 4xx (erro de cliente/credenciais), para imediatamente
+			slog.Error("Erro fatal de login (não será retentado)", "status", resp.StatusCode, "response", string(bodyBytes))
+			return lastErr
+		}
+
+		// Sucesso: Decodifica
+		var result loginResponse
+		if err := json.NewDecoder(bytes.NewBuffer(bodyBytes)).Decode(&result); err != nil {
+			lastErr = fmt.Errorf("erro ao decodificar resposta: %w", err)
+			continue
+		}
+
+		if result.BearerToken == "" {
+			jsonErr, _ := json.Marshal(result.Error)
+			lastErr = fmt.Errorf("token não retornado pelo ERP: %s", string(jsonErr))
+			slog.Warn("Token vazio na resposta", "response", string(jsonErr))
+			continue
+		}
+
+		c.bearerToken = result.BearerToken
+		// Aumentado para 20 minutos para evitar logins frequentes (Sankhya geralmente dura 30m)
+		c.tokenExpiry = time.Now().Add(20 * time.Minute)
+
+		slog.Info("Autenticação do sistema renovada com sucesso", "expiry", c.tokenExpiry)
+		return nil
 	}
 
-	var result loginResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("erro ao decodificar resposta: %w", err)
-	}
-
-	if result.BearerToken == "" {
-		// Caso venha 200 OK mas com erro no JSON interno
-		jsonErr, _ := json.Marshal(result.Error)
-		slog.Error("Token não retornado", "sankhya_error", string(jsonErr))
-		return fmt.Errorf("token não retornado pelo ERP: %s", string(jsonErr))
-	}
-
-	c.bearerToken = result.BearerToken
-	c.tokenExpiry = time.Now().Add(4*time.Minute + 50*time.Second)
-
-	slog.Info("Autenticação do sistema renovada com sucesso", "expiry", c.tokenExpiry)
-	return nil
+	slog.Error("Todas as tentativas de login falharam", "last_error", lastErr)
+	return lastErr
 }
 
 // GetToken gerencia o token Bearer, renovando se necessário
@@ -143,7 +164,6 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	}
 	defer resp.Body.Close()
 
-	// Verificação básica de status HTTP antes de decodificar
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		slog.Error("Erro HTTP na query", "status", resp.StatusCode, "body", string(bodyBytes))
@@ -156,8 +176,6 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	}
 
 	if result.Status != "1" {
-		// Loga o erro mas não retorna nil imediatamente para permitir tratamento superior se necessário,
-		// mas aqui retornamos erro para simplificar
 		slog.Error("Erro na execução de SQL (Sankhya)", "status", result.Status)
 		return nil, fmt.Errorf("erro no DbExplorerSP status: %s", result.Status)
 	}
