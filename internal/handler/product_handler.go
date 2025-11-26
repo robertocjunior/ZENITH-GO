@@ -10,16 +10,17 @@ import (
 	"time"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
+	"zenith-go/internal/notification"
 	"zenith-go/internal/sankhya"
 )
 
 type ProductHandler struct {
-	Client  *sankhya.Client
-	Config  *config.Config
-	Session *auth.SessionManager
+	Client   *sankhya.Client
+	Config   *config.Config
+	Session  *auth.SessionManager
+	Notifier *notification.EmailService
 }
 
-// (Structs de Input mantidas...)
 type searchItemsInput struct {
 	CodArm int    `json:"codArm"`
 	Filtro string `json:"filtro"`
@@ -61,24 +62,24 @@ func (h *ProductHandler) HandleSearchItems(w http.ResponseWriter, r *http.Reques
 
 	token := getTokenFromHeaderProduct(r)
 	if token == "" {
-		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token ausente", nil)
 		return
 	}
 
-	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret) // Recupera codUsu para log
+	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
 	if err != nil {
-		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
 	}
 
 	if err := h.Session.ValidateAndUpdate(token); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Sessão expirada", err)
 		return
 	}
 
 	var input searchItemsInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "JSON inválido", http.StatusBadRequest)
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
 		return
 	}
 
@@ -86,16 +87,10 @@ func (h *ProductHandler) HandleSearchItems(w http.ResponseWriter, r *http.Reques
 
 	rows, err := h.Client.SearchItems(ctx, input.CodArm, input.Filtro)
 	if err != nil {
-		slog.Error("Erro na busca de produtos", "error", err)
-		if errors.Is(err, context.DeadlineExceeded) {
-			http.Error(w, "A busca demorou muito e foi cancelada (Timeout)", http.StatusGatewayTimeout)
-			return
-		}
-		http.Error(w, "Erro na busca: "+err.Error(), http.StatusInternalServerError)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro na busca de produtos", err)
 		return
 	}
 
-	slog.Debug("Busca retornou resultados", "count", len(rows))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(rows)
 }
@@ -110,47 +105,27 @@ func (h *ProductHandler) HandleGetItemDetails(w http.ResponseWriter, r *http.Req
 	}
 
 	token := getTokenFromHeaderProduct(r)
-	if token == "" {
-		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
+	if _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
 	}
-
-	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
-	if err != nil {
-		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
-		return
-	}
-
 	if err := h.Session.ValidateAndUpdate(token); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Sessão expirada", err)
 		return
 	}
 
 	var input getItemDetailsInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "JSON inválido", http.StatusBadRequest)
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
 		return
 	}
-
-	if input.CodArm <= 0 || input.Sequencia == "" {
-		http.Error(w, "Parâmetros inválidos", http.StatusBadRequest)
-		return
-	}
-
-	slog.Debug("Buscando detalhes do item", "user", codUsu, "codArm", input.CodArm, "seq", input.Sequencia)
 
 	item, err := h.Client.GetItemDetails(ctx, input.CodArm, input.Sequencia)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			http.Error(w, "Tempo limite excedido", http.StatusGatewayTimeout)
-			return
-		}
 		if errors.Is(err, sankhya.ErrItemNotFound) {
-			slog.Info("Item não encontrado", "codArm", input.CodArm, "seq", input.Sequencia)
-			http.Error(w, err.Error(), http.StatusNotFound)
+			RespondError(w, r, h.Notifier, http.StatusNotFound, err.Error(), nil)
 		} else {
-			slog.Error("Erro ao buscar detalhes", "error", err)
-			http.Error(w, "Erro na busca: "+err.Error(), http.StatusInternalServerError)
+			RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao buscar detalhes", err)
 		}
 		return
 	}
@@ -169,37 +144,24 @@ func (h *ProductHandler) HandleGetPickingLocations(w http.ResponseWriter, r *htt
 	}
 
 	token := getTokenFromHeaderProduct(r)
-	if token == "" {
-		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
-		return
-	}
-
 	if _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
-		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
 	}
-
 	if err := h.Session.ValidateAndUpdate(token); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Sessão expirada", err)
 		return
 	}
 
 	var input getPickingLocationsInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "JSON inválido", http.StatusBadRequest)
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
 		return
 	}
 
-	slog.Debug("Buscando locais de picking", "codArm", input.CodArm, "codProd", input.CodProd)
-
 	locations, err := h.Client.GetPickingLocations(ctx, input.CodArm, input.CodProd, input.Sequencia)
 	if err != nil {
-		slog.Error("Erro ao buscar locais de picking", "error", err)
-		if errors.Is(err, context.DeadlineExceeded) {
-			http.Error(w, "Tempo limite excedido", http.StatusGatewayTimeout)
-			return
-		}
-		http.Error(w, "Erro na busca: "+err.Error(), http.StatusInternalServerError)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao buscar picking", err)
 		return
 	}
 
@@ -217,38 +179,28 @@ func (h *ProductHandler) HandleGetHistory(w http.ResponseWriter, r *http.Request
 	}
 
 	token := getTokenFromHeaderProduct(r)
-	if token == "" {
-		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
-		return
-	}
-
 	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
 	if err != nil {
-		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
 	}
-
 	if err := h.Session.ValidateAndUpdate(token); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Sessão expirada", err)
 		return
 	}
 
 	var input getHistoryInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "JSON inválido", http.StatusBadRequest)
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
 		return
 	}
 
+	// CORREÇÃO: Log adicionado para utilizar a variável codUsu
 	slog.Info("Consulta de Histórico", "user", codUsu, "dtIni", input.DtIni, "dtFim", input.DtFim)
 
 	history, err := h.Client.GetHistory(ctx, input.DtIni, input.DtFim, input.CodUsu)
 	if err != nil {
-		slog.Error("Erro ao consultar histórico", "error", err)
-		if errors.Is(err, context.DeadlineExceeded) {
-			http.Error(w, "Tempo limite excedido", http.StatusGatewayTimeout)
-			return
-		}
-		http.Error(w, "Erro na busca: "+err.Error(), http.StatusInternalServerError)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao buscar histórico", err)
 		return
 	}
 

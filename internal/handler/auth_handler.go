@@ -10,13 +10,15 @@ import (
 	"time"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
+	"zenith-go/internal/notification" // Import
 	"zenith-go/internal/sankhya"
 )
 
 type AuthHandler struct {
-	Client  *sankhya.Client
-	Config  *config.Config
-	Session *auth.SessionManager
+	Client   *sankhya.Client
+	Config   *config.Config
+	Session  *auth.SessionManager
+	Notifier *notification.EmailService // Injeção
 }
 
 type loginInput struct {
@@ -33,7 +35,6 @@ type loginOutput struct {
 	DeviceToken  string `json:"deviceToken"`
 }
 
-// Helper para extrair token do Header Authorization
 func getTokenFromHeader(r *http.Request) string {
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
@@ -43,7 +44,6 @@ func getTokenFromHeader(r *http.Request) string {
 }
 
 func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	// Contexto com timeout para o fluxo de login
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
@@ -54,8 +54,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	var input loginInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		slog.Warn("Login falhou: JSON inválido", "ip", r.RemoteAddr)
-		http.Error(w, "JSON inválido", http.StatusBadRequest)
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
 		return
 	}
 
@@ -64,31 +63,28 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	finalDeviceToken := input.DeviceToken
 	if finalDeviceToken == "" {
 		finalDeviceToken = auth.NewDeviceToken()
-		slog.Debug("DeviceToken não informado, gerado novo", "token", finalDeviceToken)
 	}
 
-	// 1. Verificar Usuário e Permissão Básica
+	// 1. Verificar Usuário
 	codUsuFloat, err := h.Client.VerifyUserAccess(ctx, input.Username)
 	if err != nil {
-		slog.Warn("Falha ao verificar usuário", "username", input.Username, "error", err)
 		if errors.Is(err, context.DeadlineExceeded) {
-			http.Error(w, "Timeout no login", http.StatusGatewayTimeout)
+			RespondError(w, r, h.Notifier, http.StatusGatewayTimeout, "Timeout no login", err)
 			return
 		}
 		if errors.Is(err, sankhya.ErrUserNotFound) {
-			http.Error(w, err.Error(), http.StatusNotFound)
+			RespondError(w, r, h.Notifier, http.StatusNotFound, err.Error(), nil)
 		} else if errors.Is(err, sankhya.ErrUserNotAuthorized) {
-			http.Error(w, err.Error(), http.StatusForbidden)
+			RespondError(w, r, h.Notifier, http.StatusForbidden, err.Error(), nil)
 		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro interno ao verificar usuário", err)
 		}
 		return
 	}
 	codUsu := int(codUsuFloat)
 
-	// 2. Verificar/Registrar Dispositivo
+	// 2. Verificar Dispositivo
 	if err := h.Client.VerifyDevice(ctx, codUsu, finalDeviceToken); err != nil {
-		slog.Warn("Dispositivo não autorizado", "username", input.Username, "device", finalDeviceToken, "error", err)
 		if errors.Is(err, sankhya.ErrDevicePendingApproval) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
@@ -98,34 +94,31 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao verificar dispositivo", err)
 		return
 	}
 
-	// 3. Login no Sankhya (Obter JSESSIONID)
+	// 3. Login no Sankhya
 	snkJSession, err := h.Client.LoginUser(ctx, input.Username, input.Password)
 	if err != nil {
-		slog.Warn("Senha inválida no Sankhya", "username", input.Username)
-		http.Error(w, "Credenciais inválidas", http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Credenciais inválidas no ERP", err)
 		return
 	}
 
-	// 4. Gerar JWT da API
+	// 4. JWT
 	jwtToken, err := auth.GenerateToken(input.Username, codUsu, h.Config.JwtSecret)
 	if err != nil {
-		slog.Error("Erro ao gerar JWT", "error", err)
-		http.Error(w, "Erro ao gerar sessão", http.StatusInternalServerError)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao gerar JWT", err)
 		return
 	}
 
-	// 5. Registrar Sessão no Redis
+	// 5. Redis
 	if err := h.Session.Register(jwtToken); err != nil {
-		slog.Error("Erro ao salvar sessão no Redis", "error", err)
-		http.Error(w, "Erro interno de sessão", http.StatusInternalServerError)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao salvar sessão", err)
 		return
 	}
 
-	slog.Info("Login realizado com sucesso", "username", input.Username, "codusu", codUsu)
+	slog.Info("Login realizado com sucesso", "username", input.Username)
 
 	response := loginOutput{
 		Username:     input.Username,
@@ -144,24 +137,12 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
 		return
 	}
-
 	token := getTokenFromHeader(r)
 	if token == "" {
-		slog.Warn("Logout tentado sem token")
-		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token ausente", nil)
 		return
 	}
-
-	// Remove do Redis
 	h.Session.Revoke(token)
-	
-	// Log seguro (apenas prefixo do token)
-	tokenPrefix := ""
-	if len(token) > 10 {
-		tokenPrefix = token[:10] + "..."
-	}
-	slog.Info("Logout realizado", "token_prefix", tokenPrefix)
-
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
@@ -177,34 +158,24 @@ func (h *AuthHandler) HandleGetPermissions(w http.ResponseWriter, r *http.Reques
 
 	token := getTokenFromHeader(r)
 	if token == "" {
-		http.Error(w, "Token de sessão não fornecido", http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token ausente", nil)
 		return
 	}
 
-	// Valida JWT (Assinatura)
 	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
 	if err != nil {
-		slog.Warn("Permissões negadas: token inválido", "error", err)
-		http.Error(w, "Token inválido: "+err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
 	}
 
-	// Valida Sessão no Redis
 	if err := h.Session.ValidateAndUpdate(token); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Sessão expirada", err)
 		return
 	}
-
-	slog.Debug("Buscando permissões", "codusu", codUsu)
 
 	permissions, err := h.Client.GetUserPermissions(ctx, codUsu)
 	if err != nil {
-		slog.Error("Erro ao buscar permissões", "codusu", codUsu, "error", err)
-		if errors.Is(err, context.DeadlineExceeded) {
-			http.Error(w, "Tempo limite excedido", http.StatusGatewayTimeout)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao buscar permissões", err)
 		return
 	}
 

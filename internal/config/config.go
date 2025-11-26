@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -16,9 +17,9 @@ type Config struct {
 	Username       string
 	Password       string
 	JwtSecret      string
-	
-	// Configurações de Log
-	LogMaxSize int 
+
+	// Logs
+	LogMaxSize int
 	LogMaxAge  int
 
 	// Redis
@@ -27,7 +28,15 @@ type Config struct {
 	RedisDB       int
 
 	// Dashboard
-	DashboardRefreshRate int // Segundos
+	DashboardRefreshRate int
+
+	// E-mail (NOVO)
+	EmailEnabled    bool
+	EmailRecipients []string
+	SMTPHost        string
+	SMTPPort        int
+	SMTPUser        string
+	SMTPPass        string
 }
 
 func Load() (*Config, error) {
@@ -37,10 +46,22 @@ func Load() (*Config, error) {
 	logAge, _ := strconv.Atoi(os.Getenv("LOG_MAX_AGE_DAYS"))
 	redisDB, _ := strconv.Atoi(os.Getenv("REDIS_DB"))
 	
-	// Leitura do Refresh Rate
 	dashRefresh, _ := strconv.Atoi(os.Getenv("DASHBOARD_REFRESH_RATE"))
 	if dashRefresh <= 0 {
-		dashRefresh = 60 // Padrão: 1 minuto (60 segundos)
+		dashRefresh = 60
+	}
+
+	// Parsing de E-mail
+	emailEnabled, _ := strconv.ParseBool(os.Getenv("EMAIL_NOTIFICATIONS_ENABLED"))
+	smtpPort, _ := strconv.Atoi(os.Getenv("SMTP_PORT"))
+	
+	recipientsStr := os.Getenv("EMAIL_RECIPIENTS")
+	var recipients []string
+	if recipientsStr != "" {
+		parts := strings.Split(recipientsStr, ",")
+		for _, p := range parts {
+			recipients = append(recipients, strings.TrimSpace(p))
+		}
 	}
 
 	cfg := &Config{
@@ -57,6 +78,13 @@ func Load() (*Config, error) {
 		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
 		RedisDB:              redisDB,
 		DashboardRefreshRate: dashRefresh,
+		// E-mail Configs
+		EmailEnabled:    emailEnabled,
+		EmailRecipients: recipients,
+		SMTPHost:        os.Getenv("SMTP_HOST"),
+		SMTPPort:        smtpPort,
+		SMTPUser:        os.Getenv("SMTP_USER"),
+		SMTPPass:        os.Getenv("SMTP_PASS"),
 	}
 
 	if cfg.ApiUrl == "" || cfg.TransactionUrl == "" || cfg.JwtSecret == "" {
