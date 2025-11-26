@@ -30,7 +30,10 @@ type Config struct {
 	// Dashboard
 	DashboardRefreshRate int
 
-	// E-mail (NOVO)
+	// Sankhya Configs (NOVO)
+	SankhyaTokenExpiryMinutes int 
+
+	// E-mail
 	EmailEnabled    bool
 	EmailRecipients []string
 	SMTPHost        string
@@ -49,6 +52,12 @@ func Load() (*Config, error) {
 	dashRefresh, _ := strconv.Atoi(os.Getenv("DASHBOARD_REFRESH_RATE"))
 	if dashRefresh <= 0 {
 		dashRefresh = 60
+	}
+
+	// NOVO: Leitura do tempo de expiração do token Sankhya
+	snkTokenExpiry, _ := strconv.Atoi(os.Getenv("SANKHYA_TOKEN_EXPIRY_MINUTES"))
+	if snkTokenExpiry <= 0 {
+		snkTokenExpiry = 5 // Padrão: 5 minutos se não informado ou inválido
 	}
 
 	// Parsing de E-mail
@@ -78,6 +87,7 @@ func Load() (*Config, error) {
 		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
 		RedisDB:              redisDB,
 		DashboardRefreshRate: dashRefresh,
+		SankhyaTokenExpiryMinutes: snkTokenExpiry, // Atribuição do valor
 		// E-mail Configs
 		EmailEnabled:    emailEnabled,
 		EmailRecipients: recipients,

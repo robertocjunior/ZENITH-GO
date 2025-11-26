@@ -59,7 +59,12 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		errorMsg := string(bodyBytes)
-		slog.Error("Login do sistema falhou", "status", resp.StatusCode, "response", errorMsg)
+		
+		slog.Error("Login do sistema falhou", 
+			"status", resp.StatusCode, 
+			"response", errorMsg,
+			"url", url,
+		)
 		return fmt.Errorf("login falhou com status %d: %s", resp.StatusCode, errorMsg)
 	}
 
@@ -75,16 +80,18 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	}
 
 	c.bearerToken = result.BearerToken
-	c.tokenExpiry = time.Now().Add(20 * time.Minute) // Renovamos antes dos 30m padrão
+	
+	// ALTERAÇÃO AQUI: Usa o tempo configurado no .env (ou padrão 5 min)
+	expiryMinutes := time.Duration(c.cfg.SankhyaTokenExpiryMinutes)
+	c.tokenExpiry = time.Now().Add(expiryMinutes * time.Minute)
 
-	slog.Info("Autenticação do sistema renovada com sucesso", "expiry", c.tokenExpiry)
+	slog.Info("Autenticação do sistema renovada com sucesso", "expiry", c.tokenExpiry, "minutes_valid", expiryMinutes)
 	return nil
 }
 
 // GetToken gerencia o token Bearer, renovando se necessário
 func (c *Client) GetToken(ctx context.Context) (string, error) {
 	c.mu.RLock()
-	// Verifica validade local
 	if c.bearerToken != "" && time.Now().Before(c.tokenExpiry) {
 		token := c.bearerToken
 		c.mu.RUnlock()
@@ -108,13 +115,11 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// 1. Obtém token (pode ser cacheado ou novo)
 		sysToken, err := c.GetToken(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		// 2. Prepara requisição
 		reqBody := dbExplorerRequest{ServiceName: "DbExplorerSP.executeQuery"}
 		reqBody.RequestBody.SQL = sql
 		reqBody.RequestBody.Params = make(map[string]any)
@@ -145,28 +150,23 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 			return nil, fmt.Errorf("erro decodificando query: %w", err)
 		}
 
-		// 3. Verifica Sucesso
 		if result.Status == "1" {
 			return result.ResponseBody.Rows, nil
 		}
 
-		// 4. Tratamento de Erro de Sessão (Status 3)
 		if result.Status == "3" {
 			slog.Warn("Sessão Sankhya expirada (Status 3) durante query. Tentativa de renovação...", "attempt", attempt)
 			
-			// Força expiração local para obrigar renovação no próximo GetToken ou chama Authenticate direto
 			c.mu.Lock()
-			c.tokenExpiry = time.Time{} // Zera validade
+			c.tokenExpiry = time.Time{} // Zera validade para forçar re-login
 			c.mu.Unlock()
 			
-			// Se for a última tentativa, não adianta tentar de novo
 			if attempt == maxAttempts {
 				lastErr = fmt.Errorf("erro de sessão persistente após retry (Status 3)")
 			}
-			continue // Volta para o início do loop, pega token novo e tenta de novo
+			continue 
 		}
 
-		// Outros erros
 		slog.Error("Erro na execução de SQL (Sankhya)", "status", result.Status)
 		return nil, fmt.Errorf("erro no DbExplorerSP status: %s", result.Status)
 	}
