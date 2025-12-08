@@ -8,11 +8,13 @@ import (
 	"time"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
+	"zenith-go/internal/notification" // Import necessário
 )
 
 type HealthHandler struct {
-	Session *auth.SessionManager
-	Config  *config.Config // Injeção de dependência
+	Session  *auth.SessionManager
+	Config   *config.Config
+	Notifier *notification.EmailService // Novo campo para injeção
 }
 
 type HealthResponse struct {
@@ -23,8 +25,12 @@ type HealthResponse struct {
 	Goroutines     int    `json:"goroutines"`
 	RedisStatus    string `json:"redis_status"`
 	ActiveSessions int64  `json:"active_sessions"`
-	RefreshRate    int    `json:"refresh_rate"` // Novo campo para o front
+	RefreshRate    int    `json:"refresh_rate"`
 	Timestamp      string `json:"timestamp"`
+}
+
+type testEmailInput struct {
+	Email string `json:"email"`
 }
 
 var startTime = time.Now()
@@ -49,11 +55,43 @@ func (h *HealthHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request
 		Goroutines:     runtime.NumGoroutine(),
 		RedisStatus:    redisStatus,
 		ActiveSessions: sessions,
-		RefreshRate:    h.Config.DashboardRefreshRate, // Envia valor do .env
+		RefreshRate:    h.Config.DashboardRefreshRate,
 		Timestamp:      time.Now().Format(time.RFC3339),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// HandleTestEmail processa o envio de e-mail de teste
+func (h *HealthHandler) HandleTestEmail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var input testEmailInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
+		return
+	}
+
+	if input.Email == "" {
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "O campo 'email' é obrigatório", nil)
+		return
+	}
+
+	// Tenta enviar o e-mail
+	if err := h.Notifier.SendTestEmail(input.Email); err != nil {
+		// Retorna 500 se falhar no SMTP
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Falha ao enviar e-mail de teste: "+err.Error(), err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "E-mail de teste enviado com sucesso para " + input.Email,
+	})
 }

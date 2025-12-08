@@ -17,7 +17,6 @@ import (
 	"zenith-go/internal/sankhya"
 )
 
-// ... (código existente responseWriter, middlewares, etc permanece igual) ...
 type responseWriter struct {
 	http.ResponseWriter
 	status int
@@ -103,10 +102,6 @@ func startKeepAliveWorker(session *auth.SessionManager, client *sankhya.Client) 
 
 				if err != nil {
 					slog.Warn("KeepAlive Worker: Falha ao pingar Sankhya", "token_suffix", token[len(token)-5:], "error", err)
-					// Opcional: Se falhar X vezes, revogar. Por enquanto, tentará novamente em 10s pois o score não mudou.
-					// Para evitar loop infinito em erro, podemos incrementar o score levemente ou remover.
-					// Aqui vamos optar por tentar novamente em 1 min para não flodar log
-					// session.DelayPing(token, 1*time.Minute) (Implementação futura)
 					continue 
 				}
 
@@ -177,8 +172,9 @@ func main() {
 	}
 
 	healthHandler := &handler.HealthHandler{
-		Session: sessionManager,
-		Config:  cfg,
+		Session:  sessionManager,
+		Config:   cfg,
+		Notifier: emailService, // INJEÇÃO DO SERVIÇO DE EMAIL AQUI
 	}
 
 	mux := http.NewServeMux()
@@ -192,6 +188,9 @@ func main() {
 	mux.HandleFunc("/apiv1/get-history", productHandler.HandleGetHistory)
 	mux.HandleFunc("/apiv1/execute-transaction", transactionHandler.HandleExecuteTransaction)
 	mux.HandleFunc("/apiv1/health", healthHandler.HandleHealthCheck)
+	
+	// NOVA ROTA DE TESTE DE EMAIL
+	mux.HandleFunc("/apiv1/test-email", healthHandler.HandleTestEmail)
 
 	finalHandler := loggingMiddleware(securityMiddleware(mux))
 
