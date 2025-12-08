@@ -174,6 +174,45 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	return nil, lastErr
 }
 
+func (c *Client) KeepAlive(ctx context.Context, snkSessionID string) error {
+	// Constroi a URL
+	baseURL := strings.TrimRight(c.cfg.SankhyaRenewUrl, "/")
+	url := fmt.Sprintf("%s/placemm/place/status?action=list&ignoreUpdSessionTime=true", baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Cookie", fmt.Sprintf("JSESSIONID=%s", snkSessionID))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("erro de rede no keepalive: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status http inválido: %d", resp.StatusCode)
+	}
+
+	// Estrutura simples para validar a resposta
+	var result struct {
+		Success bool `json:"success"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("erro ao decodificar json: %w", err)
+	}
+
+	if !result.Success {
+		return fmt.Errorf("sankhya retornou success: false")
+	}
+
+	return nil
+}
+
 func sanitizeStringForSql(s string) string {
 	return strings.ReplaceAll(s, "'", "")
 }

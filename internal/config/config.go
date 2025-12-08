@@ -12,11 +12,14 @@ import (
 type Config struct {
 	ApiUrl         string
 	TransactionUrl string
-	AppKey         string
-	Token          string
-	Username       string
-	Password       string
-	JwtSecret      string
+	// NOVO CAMPO
+	SankhyaRenewUrl string 
+
+	AppKey   string
+	Token    string
+	Username string
+	Password string
+	JwtSecret string
 
 	// Logs
 	LogMaxSize int
@@ -30,7 +33,7 @@ type Config struct {
 	// Dashboard
 	DashboardRefreshRate int
 
-	// Sankhya Configs (NOVO)
+	// Sankhya Configs
 	SankhyaTokenExpiryMinutes int 
 
 	// E-mail
@@ -54,13 +57,11 @@ func Load() (*Config, error) {
 		dashRefresh = 60
 	}
 
-	// NOVO: Leitura do tempo de expiração do token Sankhya
 	snkTokenExpiry, _ := strconv.Atoi(os.Getenv("SANKHYA_TOKEN_EXPIRY_MINUTES"))
 	if snkTokenExpiry <= 0 {
-		snkTokenExpiry = 5 // Padrão: 5 minutos se não informado ou inválido
+		snkTokenExpiry = 5 
 	}
 
-	// Parsing de E-mail
 	emailEnabled, _ := strconv.ParseBool(os.Getenv("EMAIL_NOTIFICATIONS_ENABLED"))
 	smtpPort, _ := strconv.Atoi(os.Getenv("SMTP_PORT"))
 	
@@ -76,6 +77,9 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		ApiUrl:               os.Getenv("SANKHYA_API_URL"),
 		TransactionUrl:       os.Getenv("SANKHYA_TRANSACTION_URL"),
+		// Carrega nova URL
+		SankhyaRenewUrl:      os.Getenv("SANKHYA_RENEW_URL"), 
+		
 		AppKey:               os.Getenv("SANKHYA_APPKEY"),
 		Token:                os.Getenv("SANKHYA_TOKEN"),
 		Username:             os.Getenv("SANKHYA_USERNAME"),
@@ -87,8 +91,7 @@ func Load() (*Config, error) {
 		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
 		RedisDB:              redisDB,
 		DashboardRefreshRate: dashRefresh,
-		SankhyaTokenExpiryMinutes: snkTokenExpiry, // Atribuição do valor
-		// E-mail Configs
+		SankhyaTokenExpiryMinutes: snkTokenExpiry,
 		EmailEnabled:    emailEnabled,
 		EmailRecipients: recipients,
 		SMTPHost:        os.Getenv("SMTP_HOST"),
@@ -97,8 +100,8 @@ func Load() (*Config, error) {
 		SMTPPass:        os.Getenv("SMTP_PASS"),
 	}
 
-	if cfg.ApiUrl == "" || cfg.TransactionUrl == "" || cfg.JwtSecret == "" {
-		return nil, fmt.Errorf("variáveis de ambiente obrigatórias não preenchidas")
+	if cfg.ApiUrl == "" || cfg.TransactionUrl == "" || cfg.JwtSecret == "" || cfg.SankhyaRenewUrl == "" {
+		return nil, fmt.Errorf("variáveis de ambiente obrigatórias não preenchidas (verifique SANKHYA_RENEW_URL)")
 	}
 
 	if cfg.RedisAddr == "" {

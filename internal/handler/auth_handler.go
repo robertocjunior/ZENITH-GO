@@ -112,8 +112,8 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Redis
-	if err := h.Session.Register(jwtToken); err != nil {
+	// 5. Redis (ATUALIZADO: Passando snkJSession)
+	if err := h.Session.Register(jwtToken, snkJSession); err != nil {
 		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao salvar sessão", err)
 		return
 	}

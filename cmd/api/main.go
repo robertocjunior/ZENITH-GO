@@ -13,10 +13,11 @@ import (
 	"zenith-go/internal/config"
 	"zenith-go/internal/handler"
 	"zenith-go/internal/logger"
-	"zenith-go/internal/notification" // Import
+	"zenith-go/internal/notification"
 	"zenith-go/internal/sankhya"
 )
 
+// ... (código existente responseWriter, middlewares, etc permanece igual) ...
 type responseWriter struct {
 	http.ResponseWriter
 	status int
@@ -71,6 +72,53 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// WORKER DE KEEP-ALIVE
+func startKeepAliveWorker(session *auth.SessionManager, client *sankhya.Client) {
+	ticker := time.NewTicker(10 * time.Second) // Verifica a cada 10 segundos
+	go func() {
+		for range ticker.C {
+			tokens, err := session.GetTokensToPing()
+			if err != nil {
+				slog.Error("KeepAlive Worker: Erro ao buscar tokens", "error", err)
+				continue
+			}
+
+			if len(tokens) > 0 {
+				slog.Debug("KeepAlive Worker: Processando tokens", "count", len(tokens))
+			}
+
+			for _, token := range tokens {
+				// Recupera o JSessionID
+				jsid, err := session.GetSankhyaSession(token)
+				if err != nil {
+					// Se não achou sessão, remove da lista de ping
+					session.Revoke(token)
+					continue
+				}
+
+				// Faz o Ping no Sankhya
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err = client.KeepAlive(ctx, jsid)
+				cancel()
+
+				if err != nil {
+					slog.Warn("KeepAlive Worker: Falha ao pingar Sankhya", "token_suffix", token[len(token)-5:], "error", err)
+					// Opcional: Se falhar X vezes, revogar. Por enquanto, tentará novamente em 10s pois o score não mudou.
+					// Para evitar loop infinito em erro, podemos incrementar o score levemente ou remover.
+					// Aqui vamos optar por tentar novamente em 1 min para não flodar log
+					// session.DelayPing(token, 1*time.Minute) (Implementação futura)
+					continue 
+				}
+
+				// Sucesso: Reagenda para daqui a 2 minutos
+				if err := session.UpdatePingTime(token); err != nil {
+					slog.Error("KeepAlive Worker: Erro ao atualizar tempo", "error", err)
+				}
+			}
+		}
+	}()
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -81,9 +129,7 @@ func main() {
 	logger.Init(cfg)
 	slog.Info("Configurações carregadas", "api_url", cfg.ApiUrl)
 
-	// 1. Inicializa Serviço de E-mail
 	emailService := notification.NewEmailService(cfg)
-
 	sankhyaClient := sankhya.NewClient(cfg)
 
 	slog.Info("Autenticando sistema no ERP...")
@@ -104,7 +150,11 @@ func main() {
 	}
 	slog.Info("Conexão com Redis estabelecida com sucesso")
 
-	// 2. Injeta Notifier nos Handlers
+	// --- INICIA O WORKER DE KEEP-ALIVE ---
+	slog.Info("Iniciando Worker de Keep-Alive (Sankhya)...")
+	startKeepAliveWorker(sessionManager, sankhyaClient)
+	// -------------------------------------
+
 	authHandler := &handler.AuthHandler{
 		Client:   sankhyaClient,
 		Config:   cfg,
