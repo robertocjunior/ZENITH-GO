@@ -81,7 +81,7 @@ func (c *Client) Authenticate(ctx context.Context) error {
 
 	c.bearerToken = result.BearerToken
 	
-	// ALTERAÇÃO AQUI: Usa o tempo configurado no .env (ou padrão 5 min)
+	// Usa o tempo configurado no .env (ou padrão 5 min)
 	expiryMinutes := time.Duration(c.cfg.SankhyaTokenExpiryMinutes)
 	c.tokenExpiry = time.Now().Add(expiryMinutes * time.Minute)
 
@@ -107,6 +107,48 @@ func (c *Client) GetToken(ctx context.Context) (string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.bearerToken, nil
+}
+
+// KeepAlive realiza a chamada para manter a sessão ativa
+func (c *Client) KeepAlive(ctx context.Context, snkSessionID string) error {
+	// Constroi a URL
+	baseURL := strings.TrimRight(c.cfg.SankhyaRenewUrl, "/")
+	url := fmt.Sprintf("%s/placemm/place/status?action=list&ignoreUpdSessionTime=true", baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Cookie", fmt.Sprintf("JSESSIONID=%s", snkSessionID))
+	req.Header.Set("Content-Type", "application/json")
+	// ALTERADO: Adicionado header connection: keep-alive
+	req.Header.Set("connection", "keep-alive")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("erro de rede no keepalive: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status http inválido: %d", resp.StatusCode)
+	}
+
+	// Estrutura simples para validar a resposta
+	var result struct {
+		Success bool `json:"success"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("erro ao decodificar json: %w", err)
+	}
+
+	if !result.Success {
+		return fmt.Errorf("sankhya retornou success: false")
+	}
+
+	return nil
 }
 
 // executeQuery com RETRY AUTOMÁTICO em caso de erro de sessão (Status 3)
@@ -172,45 +214,6 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 	}
 
 	return nil, lastErr
-}
-
-func (c *Client) KeepAlive(ctx context.Context, snkSessionID string) error {
-	// Constroi a URL
-	baseURL := strings.TrimRight(c.cfg.SankhyaRenewUrl, "/")
-	url := fmt.Sprintf("%s/placemm/place/status?action=list&ignoreUpdSessionTime=true", baseURL)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Cookie", fmt.Sprintf("JSESSIONID=%s", snkSessionID))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("erro de rede no keepalive: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status http inválido: %d", resp.StatusCode)
-	}
-
-	// Estrutura simples para validar a resposta
-	var result struct {
-		Success bool `json:"success"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("erro ao decodificar json: %w", err)
-	}
-
-	if !result.Success {
-		return fmt.Errorf("sankhya retornou success: false")
-	}
-
-	return nil
 }
 
 func sanitizeStringForSql(s string) string {

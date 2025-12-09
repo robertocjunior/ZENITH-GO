@@ -73,7 +73,8 @@ func loggingMiddleware(next http.Handler) http.Handler {
 
 // WORKER DE KEEP-ALIVE
 func startKeepAliveWorker(session *auth.SessionManager, client *sankhya.Client) {
-	ticker := time.NewTicker(10 * time.Second) // Verifica a cada 10 segundos
+	// ALTERADO: Ticker mais rápido (5s) para atender o intervalo de 15s
+	ticker := time.NewTicker(5 * time.Second) 
 	go func() {
 		for range ticker.C {
 			tokens, err := session.GetTokensToPing()
@@ -105,7 +106,7 @@ func startKeepAliveWorker(session *auth.SessionManager, client *sankhya.Client) 
 					continue 
 				}
 
-				// Sucesso: Reagenda para daqui a 2 minutos
+				// Sucesso: Reagenda para daqui a 15 segundos
 				if err := session.UpdatePingTime(token); err != nil {
 					slog.Error("KeepAlive Worker: Erro ao atualizar tempo", "error", err)
 				}
@@ -174,7 +175,7 @@ func main() {
 	healthHandler := &handler.HealthHandler{
 		Session:  sessionManager,
 		Config:   cfg,
-		Notifier: emailService, // INJEÇÃO DO SERVIÇO DE EMAIL AQUI
+		Notifier: emailService,
 	}
 
 	mux := http.NewServeMux()
@@ -189,7 +190,7 @@ func main() {
 	mux.HandleFunc("/apiv1/execute-transaction", transactionHandler.HandleExecuteTransaction)
 	mux.HandleFunc("/apiv1/health", healthHandler.HandleHealthCheck)
 	
-	// NOVA ROTA DE TESTE DE EMAIL
+	// ROTA DE TESTE DE EMAIL
 	mux.HandleFunc("/apiv1/test-email", healthHandler.HandleTestEmail)
 
 	finalHandler := loggingMiddleware(securityMiddleware(mux))

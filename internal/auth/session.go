@@ -17,7 +17,8 @@ var (
 
 const (
 	KeepAliveKey = "sessions:keepalive" // Nome do Sorted Set
-	KeepAliveInterval = 2 * time.Minute
+	// ALTERADO: Tempo reduzido para 15 segundos conforme padrão Sankhya
+	KeepAliveInterval = 15 * time.Second
 )
 
 type SessionManager struct {
@@ -54,7 +55,7 @@ func (sm *SessionManager) Register(token string, snkSessionID string) error {
 	// 1. Salva a sessão normal
 	pipe.Set(ctx, "session:"+token, snkSessionID, sm.timeout)
 	
-	// 2. Agenda o próximo keep-alive para daqui a 2 minutos
+	// 2. Agenda o próximo keep-alive
 	nextPing := float64(time.Now().Add(KeepAliveInterval).Unix())
 	pipe.ZAdd(ctx, KeepAliveKey, redis.Z{
 		Score:  nextPing,
@@ -73,7 +74,6 @@ func (sm *SessionManager) ValidateAndUpdate(token string) error {
 	ctx := context.Background()
 	key := "session:" + token
 
-	// Variável 'err' declarada aqui pela primeira vez
 	_, err := sm.client.Get(ctx, key).Result()
 	if err == redis.Nil {
 		sm.client.ZRem(ctx, KeepAliveKey, token) // Remove do agendamento se expirou
@@ -87,14 +87,13 @@ func (sm *SessionManager) ValidateAndUpdate(token string) error {
 	// Renova expiração da chave principal
 	pipe.Expire(ctx, key, sm.timeout)
 	
-	// RE-AGENDA: Se o usuário mexeu, só precisamos pingar daqui a 2 min a partir de AGORA
+	// RE-AGENDA
 	nextPing := float64(time.Now().Add(KeepAliveInterval).Unix())
 	pipe.ZAdd(ctx, KeepAliveKey, redis.Z{
 		Score:  nextPing,
 		Member: token,
 	})
 
-	// CORREÇÃO AQUI: Trocado := por =
 	_, err = pipe.Exec(ctx) 
 	return err // Retorna erro se falhar
 }
