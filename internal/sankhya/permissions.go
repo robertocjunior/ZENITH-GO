@@ -7,6 +7,7 @@ import (
 )
 
 func (c *Client) GetUserPermissions(ctx context.Context, codUsu int) (*UserPermissions, error) {
+	// A query permanece a mesma
 	sqlQuery := fmt.Sprintf(`
 		SELECT 
 			LISTAGG(d.CODARM, ', ') WITHIN GROUP (ORDER BY d.CODARM) AS LISTA_CODIGOS, 
@@ -29,47 +30,50 @@ func (c *Client) GetUserPermissions(ctx context.Context, codUsu int) (*UserPermi
 
 	row := rows[0]
 
-	// Helper seguro para converter "S"/"N" em bool, tratando NULOS
-	toBool := func(val any) bool {
-		if val == nil {
-			return false
+	// --- FUNÇÕES AUXILIARES SEGURAS PARA EVITAR O PANIC ---
+	
+	// Converte interface{} para string de forma segura (trata nil)
+	safeString := func(v any) string {
+		if v == nil {
+			return ""
 		}
-		if str, ok := val.(string); ok {
-			return str == "S"
-		}
-		return false
+		return fmt.Sprintf("%v", v)
 	}
 
-	// Helper seguro para Inteiros (Sankhya geralmente retorna números como float64 no driver JSON)
-	toInt := func(val any) int {
-		if val == nil {
+	// Converte interface{} para int de forma segura (Sankhya retorna números como float64 em JSON)
+	safeInt := func(v any) int {
+		if v == nil {
 			return 0
 		}
-		if f, ok := val.(float64); ok {
+		if f, ok := v.(float64); ok {
 			return int(f)
 		}
+		// Tenta outras conversões se necessário
 		return 0
 	}
 
-	// Helper seguro para Strings
-	toString := func(val any) string {
-		if val == nil {
-			return ""
+	// Converte "S"/"N" para bool de forma segura
+	safeBool := func(v any) bool {
+		if v == nil {
+			return false
 		}
-		return fmt.Sprintf("%v", val)
+		if s, ok := v.(string); ok {
+			return s == "S"
+		}
+		return false
 	}
 
 	slog.Debug("Permissões carregadas", "codusu", codUsu)
 
 	return &UserPermissions{
-		ListaCodigos: toString(row[0]),
-		ListaNomes:   toString(row[1]),
-		CodUsu:       toInt(row[2]),
-		Transf:       toBool(row[3]),
-		Baixa:        toBool(row[4]),
-		Pick:         toBool(row[5]),
-		Corre:        toBool(row[6]),
-		BxaPick:      toBool(row[7]),
-		CriaPick:     toBool(row[8]),
+		ListaCodigos: safeString(row[0]),
+		ListaNomes:   safeString(row[1]),
+		CodUsu:       safeInt(row[2]),
+		Transf:       safeBool(row[3]),
+		Baixa:        safeBool(row[4]),
+		Pick:         safeBool(row[5]),
+		Corre:        safeBool(row[6]),
+		BxaPick:      safeBool(row[7]),
+		CriaPick:     safeBool(row[8]),
 	}, nil
 }

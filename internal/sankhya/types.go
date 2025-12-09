@@ -49,8 +49,9 @@ type dbExplorerRequest struct {
 }
 
 type dbExplorerResponse struct {
-	Status       string `json:"status"`
-	ResponseBody struct {
+	Status        string `json:"status"`
+	StatusMessage string `json:"statusMessage"` // CAMPO ADICIONADO AQUI
+	ResponseBody  struct {
 		Rows [][]any `json:"rows"`
 	} `json:"responseBody"`
 }
@@ -76,12 +77,11 @@ type datasetSaveResponse struct {
 }
 
 // --- Structs para Serviço de Transações (Novos) ---
-// Usados pelo TransactionHandler e TransactionService
 
 type TransactionResponse struct {
 	ServiceName   string `json:"serviceName"`
 	Status        string `json:"status"`
-	StatusMessage string `json:"statusMessage"` // Ocasionalmente retornado em erros
+	StatusMessage string `json:"statusMessage"` 
 	ResponseBody  struct {
 		Result [][]string `json:"result"` // Para DatasetSP.save
 	} `json:"responseBody"`

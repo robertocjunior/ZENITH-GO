@@ -35,6 +35,11 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Verifica novamente se já foi renovado por outra thread
+	if c.bearerToken != "" && time.Now().Before(c.tokenExpiry) {
+		return nil
+	}
+
 	slog.Info("Autenticando Sistema (Service Account) no Sankhya...")
 
 	url := fmt.Sprintf("%s/login", c.cfg.ApiUrl)
@@ -81,7 +86,6 @@ func (c *Client) Authenticate(ctx context.Context) error {
 
 	c.bearerToken = result.BearerToken
 	
-	// Usa o tempo configurado no .env (ou padrão 5 min)
 	expiryMinutes := time.Duration(c.cfg.SankhyaTokenExpiryMinutes)
 	c.tokenExpiry = time.Now().Add(expiryMinutes * time.Minute)
 
@@ -92,7 +96,7 @@ func (c *Client) Authenticate(ctx context.Context) error {
 // GetToken gerencia o token Bearer, renovando se necessário
 func (c *Client) GetToken(ctx context.Context) (string, error) {
 	c.mu.RLock()
-	if c.bearerToken != "" && time.Now().Before(c.tokenExpiry) {
+	if c.bearerToken != "" && time.Now().Add(30*time.Second).Before(c.tokenExpiry) {
 		token := c.bearerToken
 		c.mu.RUnlock()
 		return token, nil
@@ -111,7 +115,6 @@ func (c *Client) GetToken(ctx context.Context) (string, error) {
 
 // KeepAlive realiza a chamada para manter a sessão ativa
 func (c *Client) KeepAlive(ctx context.Context, snkSessionID string) error {
-	// Constroi a URL
 	baseURL := strings.TrimRight(c.cfg.SankhyaRenewUrl, "/")
 	url := fmt.Sprintf("%s/placemm/place/status?action=list&ignoreUpdSessionTime=true", baseURL)
 
@@ -122,8 +125,7 @@ func (c *Client) KeepAlive(ctx context.Context, snkSessionID string) error {
 
 	req.Header.Set("Cookie", fmt.Sprintf("JSESSIONID=%s", snkSessionID))
 	req.Header.Set("Content-Type", "application/json")
-	// ALTERADO: Adicionado header connection: keep-alive
-	req.Header.Set("connection", "keep-alive")
+	req.Header.Set("Connection", "keep-alive")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -135,7 +137,6 @@ func (c *Client) KeepAlive(ctx context.Context, snkSessionID string) error {
 		return fmt.Errorf("status http inválido: %d", resp.StatusCode)
 	}
 
-	// Estrutura simples para validar a resposta
 	var result struct {
 		Success bool `json:"success"`
 	}
@@ -151,9 +152,9 @@ func (c *Client) KeepAlive(ctx context.Context, snkSessionID string) error {
 	return nil
 }
 
-// executeQuery com RETRY AUTOMÁTICO em caso de erro de sessão (Status 3)
+// executeQuery com RETRY AUTOMÁTICO em caso de erro de sessão (Status 3 ou 0)
 func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) {
-	maxAttempts := 2
+	maxAttempts := 3
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -167,7 +168,9 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 		reqBody.RequestBody.Params = make(map[string]any)
 		jsonData, _ := json.Marshal(reqBody)
 
+		// CORREÇÃO AQUI: URL Fixa sem placeholder sobrando
 		url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json", c.cfg.ApiUrl)
+		
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 		if err != nil {
 			return nil, err
@@ -178,7 +181,10 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return nil, err
+			slog.Warn("Erro de rede ao conectar no Sankhya. Tentando novamente...", "attempt", attempt, "error", err)
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
+			continue
 		}
 		defer resp.Body.Close()
 
@@ -196,21 +202,90 @@ func (c *Client) executeQuery(ctx context.Context, sql string) ([][]any, error) 
 			return result.ResponseBody.Rows, nil
 		}
 
-		if result.Status == "3" {
-			slog.Warn("Sessão Sankhya expirada (Status 3) durante query. Tentativa de renovação...", "attempt", attempt)
+		// TRATAMENTO DE ERROS PARA RETRY
+		if result.Status == "3" || result.Status == "0" {
+			slog.Warn("Sessão Sankhya instável (Status "+result.Status+"). Renovando token...", "attempt", attempt)
 			
 			c.mu.Lock()
-			c.tokenExpiry = time.Time{} // Zera validade para forçar re-login
+			c.tokenExpiry = time.Time{} 
 			c.mu.Unlock()
 			
 			if attempt == maxAttempts {
-				lastErr = fmt.Errorf("erro de sessão persistente após retry (Status 3)")
+				lastErr = fmt.Errorf("erro persistente no Sankhya (Status %s): %s", result.Status, result.StatusMessage)
 			}
+			time.Sleep(1 * time.Second)
 			continue 
 		}
 
-		slog.Error("Erro na execução de SQL (Sankhya)", "status", result.Status)
-		return nil, fmt.Errorf("erro no DbExplorerSP status: %s", result.Status)
+		slog.Error("Erro na execução de SQL (Sankhya)", "status", result.Status, "msg", result.StatusMessage)
+		return nil, fmt.Errorf("erro no DbExplorerSP status: %s - %s", result.Status, result.StatusMessage)
+	}
+
+	return nil, lastErr
+}
+
+// ExecuteServiceAsSystem com RETRY AUTOMÁTICO
+func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string, requestBody any) (*TransactionResponse, error) {
+	maxAttempts := 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		sysToken, err := c.GetToken(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=%s&outputType=json", c.cfg.ApiUrl, serviceName)
+		payload := ServiceRequest{ServiceName: serviceName, RequestBody: requestBody}
+		jsonData, _ := json.Marshal(payload)
+
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+sysToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		slog.Debug("Calling Sankhya System Service", "service", serviceName, "attempt", attempt)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			slog.Warn("Erro de rede no serviço. Tentando novamente...", "service", serviceName, "error", err)
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		defer resp.Body.Close()
+
+		var result TransactionResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, fmt.Errorf("erro ao decodificar resposta: %w", err)
+		}
+
+		if result.Status == "1" {
+			return &result, nil
+		}
+
+		// Tratamento de Sessão Expirada ou Instável
+		isTokenError := result.Status == "3" || result.Status == "0" ||
+						(result.Status == "0" && (strings.Contains(result.StatusMessage, "Token") || strings.Contains(result.StatusMessage, "Sessão")))
+
+		if isTokenError {
+			slog.Warn("Token instável ou rejeitado. Renovando...", "service", serviceName, "status", result.Status)
+			c.mu.Lock()
+			c.tokenExpiry = time.Time{} 
+			c.mu.Unlock()
+			
+			if attempt == maxAttempts {
+				lastErr = fmt.Errorf("erro persistente em %s: %s", serviceName, result.StatusMessage)
+			}
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		slog.Error("Sankhya System API Error", "service", serviceName, "status", result.Status, "msg", result.StatusMessage)
+		return nil, fmt.Errorf("erro na System API (%s): %s", serviceName, result.StatusMessage)
 	}
 
 	return nil, lastErr

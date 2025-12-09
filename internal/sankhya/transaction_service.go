@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
+	"net/http" // Import adicionado
 	"strconv"
 	"strings"
 	"time"
@@ -81,69 +81,6 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 	}
 
 	return &result, nil
-}
-
-// ExecuteServiceAsSystem com RETRY AUTOMÁTICO
-func (c *Client) ExecuteServiceAsSystem(ctx context.Context, serviceName string, requestBody any) (*TransactionResponse, error) {
-	maxAttempts := 2
-	var lastErr error
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		sysToken, err := c.GetToken(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=%s&outputType=json", c.cfg.ApiUrl, serviceName)
-		payload := ServiceRequest{ServiceName: serviceName, RequestBody: requestBody}
-		jsonData, _ := json.Marshal(payload)
-
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "Bearer "+sysToken)
-		req.Header.Set("Content-Type", "application/json")
-
-		slog.Debug("Calling Sankhya System Service", "service", serviceName, "attempt", attempt)
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("erro de conexão: %w", err)
-		}
-		defer resp.Body.Close()
-
-		var result TransactionResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return nil, fmt.Errorf("erro ao decodificar resposta: %w", err)
-		}
-
-		if result.Status == "1" {
-			return &result, nil
-		}
-
-		// Tratamento de Sessão Expirada (Status 3 ou msg de token)
-		isTokenError := result.Status == "3" || 
-						(result.Status == "0" && (strings.Contains(result.StatusMessage, "Token") || strings.Contains(result.StatusMessage, "Sessão")))
-
-		if isTokenError {
-			slog.Warn("Token de sistema rejeitado durante transação. Renovando...", "service", serviceName)
-			c.mu.Lock()
-			c.tokenExpiry = time.Time{} // Força renovação
-			c.mu.Unlock()
-			
-			if attempt == maxAttempts {
-				lastErr = fmt.Errorf("erro de token persistente em %s: %s", serviceName, result.StatusMessage)
-			}
-			continue
-		}
-
-		slog.Error("Sankhya System API Error", "service", serviceName, "status", result.Status, "msg", result.StatusMessage)
-		return nil, fmt.Errorf("erro na System API (%s): %s", serviceName, result.StatusMessage)
-	}
-
-	return nil, lastErr
 }
 
 // ExecuteTransaction orquestra a lógica baseada no tipo
@@ -441,7 +378,6 @@ func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkS
 		return "", fmt.Errorf("erro na procedure final: %w", err)
 	}
 
-	// MENSAGEM PADRONIZADA DE SUCESSO
 	if strings.Contains(resp.StatusMessage, "Processadas com Sucesso") {
 		return "Picking realizado com sucesso!", nil
 	}
@@ -523,9 +459,7 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		rowsDest, _ := c.executeQuery(ctx, sqlDest)
 
 		if len(rowsDest) > 0 {
-			// Lógica de Merge (Baixa do destino antes de mover)
-			// Simplificado: assume que o usuário sabe o que faz se for produto diferente
-			// O backend Sankhya vai validar na Procedure
+			// Lógica de Merge
 			destQtd := safeFloat64(rowsDest[0][1])
 			records = append(records, DatasetRecord{
 				Values: map[string]string{
@@ -613,8 +547,6 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 		return "", fmt.Errorf("erro na procedure final: %w", err)
 	}
 
-	// MENSAGEM PADRONIZADA DE SUCESSO
-	// Ignora a mensagem quebrada "Baixas/Transferncias Processadas com Sucesso!"
 	if strings.Contains(resp.StatusMessage, "Processadas com Sucesso") {
 		if input.Type == "baixa" {
 			return "Baixa realizada com sucesso!", nil
