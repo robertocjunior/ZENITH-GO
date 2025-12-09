@@ -28,14 +28,43 @@ func (c *Client) GetUserPermissions(ctx context.Context, codUsu int) (*UserPermi
 	}
 
 	row := rows[0]
-	toBool := func(val any) bool { return val.(string) == "S" }
+
+	// Helper seguro para converter "S"/"N" em bool, tratando NULOS
+	toBool := func(val any) bool {
+		if val == nil {
+			return false
+		}
+		if str, ok := val.(string); ok {
+			return str == "S"
+		}
+		return false
+	}
+
+	// Helper seguro para Inteiros (Sankhya geralmente retorna números como float64 no driver JSON)
+	toInt := func(val any) int {
+		if val == nil {
+			return 0
+		}
+		if f, ok := val.(float64); ok {
+			return int(f)
+		}
+		return 0
+	}
+
+	// Helper seguro para Strings
+	toString := func(val any) string {
+		if val == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", val)
+	}
 
 	slog.Debug("Permissões carregadas", "codusu", codUsu)
 
 	return &UserPermissions{
-		ListaCodigos: fmt.Sprintf("%v", row[0]),
-		ListaNomes:   fmt.Sprintf("%v", row[1]),
-		CodUsu:       int(row[2].(float64)),
+		ListaCodigos: toString(row[0]),
+		ListaNomes:   toString(row[1]),
+		CodUsu:       toInt(row[2]),
 		Transf:       toBool(row[3]),
 		Baixa:        toBool(row[4]),
 		Pick:         toBool(row[5]),
