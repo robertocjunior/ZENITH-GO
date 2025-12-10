@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http" // Import adicionado
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +72,12 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 	}
 
 	if result.Status != "1" && result.Status != "2" {
+		// CORREÇÃO: Detecta sessão expirada do usuário
+		if result.Status == "3" {
+			slog.Warn("Sessão do usuário expirada no Sankhya (Status 3)", "service", serviceName)
+			return nil, ErrUserSessionExpired
+		}
+
 		slog.Error("Sankhya Service Error", "service", serviceName, "status", result.Status, "msg", result.StatusMessage)
 		msg := result.StatusMessage
 		if msg == "" {
@@ -197,9 +203,9 @@ func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snk
 	}
 
 	slog.Debug("Salvando Histórico de Correção", "table", "AD_HISTENDAPP")
+	// Reutiliza método System que tem Retry automático
 	_, err = c.ExecuteServiceAsSystem(ctx, "DatasetSP.save", histBody)
 	if err != nil {
-		// Loga erro mas retorna sucesso pois a correção principal funcionou
 		slog.Error("Erro ao salvar histórico de correção", "error", err)
 	}
 

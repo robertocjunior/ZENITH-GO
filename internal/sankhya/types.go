@@ -9,6 +9,8 @@ var (
 	ErrDevicePendingApproval = errors.New("dispositivo não autorizado. Solicite a liberação ao administrador")
 	ErrItemNotFound          = errors.New("item não encontrado")
 	ErrPermissionDenied      = errors.New("permissão negada para esta operação")
+	// NOVO ERRO:
+	ErrUserSessionExpired    = errors.New("sessão do usuário expirada no ERP")
 )
 
 // --- Structs de Login (Service Account & Mobile) ---
@@ -50,14 +52,13 @@ type dbExplorerRequest struct {
 
 type dbExplorerResponse struct {
 	Status        string `json:"status"`
-	StatusMessage string `json:"statusMessage"` // CAMPO ADICIONADO AQUI
+	StatusMessage string `json:"statusMessage"`
 	ResponseBody  struct {
 		Rows [][]any `json:"rows"`
 	} `json:"responseBody"`
 }
 
 // --- Structs de Dataset (Legado/Interno) ---
-// Usado por métodos internos como registerDevice
 
 type datasetSaveRequest struct {
 	ServiceName string `json:"serviceName"`

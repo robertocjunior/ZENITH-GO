@@ -3,11 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 	"zenith-go/internal/auth"
-	"zenith-go/internal/notification" // Import
+	"zenith-go/internal/notification"
 	"zenith-go/internal/sankhya"
 )
 
@@ -15,7 +16,7 @@ type TransactionHandler struct {
 	Client    *sankhya.Client
 	Session   *auth.SessionManager
 	JwtSecret string
-	Notifier  *notification.EmailService // Injeção
+	Notifier  *notification.EmailService
 }
 
 type transactionRequest struct {
@@ -77,10 +78,22 @@ func (h *TransactionHandler) HandleExecuteTransaction(w http.ResponseWriter, r *
 
 	msg, err := h.Client.ExecuteTransaction(ctx, input, snkSessionId)
 	if err != nil {
+		// CORREÇÃO: Trata a sessão expirada do Sankhya (Status 3)
+		if errors.Is(err, sankhya.ErrUserSessionExpired) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error":          "Sessão Sankhya expirada. Por favor, faça login novamente.",
+				"reauthRequired": true,
+			})
+			return
+		}
+
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "permissão") || strings.Contains(err.Error(), "negada") {
 			status = http.StatusForbidden
 		}
+		
 		RespondError(w, r, h.Notifier, status, "Falha na transação", err)
 		return
 	}
