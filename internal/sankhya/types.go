@@ -214,6 +214,7 @@ type HistoryItem struct {
 	DescrProd  string  `json:"descrProd"`
 	Marca      string  `json:"marca"`
 	Derivacao  string  `json:"derivacao"`
+	QtdProd    float64 `json:"qtdProd"`    // NOVO CAMPO
 	QuantAnt   float64 `json:"quantAnt"`
 	QtdAtual   float64 `json:"qtdAtual"`
 	IdOperacao int     `json:"idOperacao"`

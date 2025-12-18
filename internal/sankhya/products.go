@@ -235,6 +235,7 @@ func (c *Client) GetHistory(ctx context.Context, dtIni string, dtFim string, cod
 		        FROM TGFVOA V 
 		        WHERE V.CODPROD = IBX.CODPROD 
 		          AND V.CODVOL = PRO.CODVOL) AS DERIVACAO, 
+		       IBX.QTDPRO,
 		       NULL AS QUANT_ANT, 
 		       NULL AS QTD_ATUAL, 
 		       BXA.SEQBAI AS ID_OPERACAO, 
@@ -243,6 +244,7 @@ func (c *Client) GetHistory(ctx context.Context, dtIni string, dtFim string, cod
 		JOIN AD_IBXEND IBX ON IBX.SEQBAI = BXA.SEQBAI 
 		LEFT JOIN TGFPRO PRO ON IBX.CODPROD = PRO.CODPROD
 		WHERE (BXA.USUGER = %s OR %s IS NULL)
+		  AND IBX.APP = 'S'
 		  AND TRUNC(BXA.DATGER) BETWEEN TO_DATE('%s', 'DD/MM/YYYY') AND TO_DATE('%s', 'DD/MM/YYYY')
 
 		UNION ALL
@@ -258,6 +260,7 @@ func (c *Client) GetHistory(ctx context.Context, dtIni string, dtFim string, cod
 		       (SELECT P.DESCRPROD FROM TGFPRO P WHERE P.CODPROD = H.CODPROD), 
 		       H.MARCA, 
 		       H.DERIV, 
+		       NULL, 
 		       H.QUANT, 
 		       H.QATUAL, 
 		       H.NUMUNICO, 
@@ -266,7 +269,7 @@ func (c *Client) GetHistory(ctx context.Context, dtIni string, dtFim string, cod
 		WHERE (H.CODUSU = %s OR %s IS NULL)
 		  AND TRUNC(H.DTHOPER) BETWEEN TO_DATE('%s', 'DD/MM/YYYY') AND TO_DATE('%s', 'DD/MM/YYYY')
 
-		ORDER BY 2 DESC, 15 ASC`, 
+		ORDER BY 2 DESC, 16 ASC`, 
 		codUsuStr, codUsuStr, safeDtIni, safeDtFim, 
 		codUsuStr, codUsuStr, safeDtIni, safeDtFim)
 
@@ -304,10 +307,11 @@ func (c *Client) GetHistory(ctx context.Context, dtIni string, dtFim string, cod
 			DescrProd:  getString(8),
 			Marca:      getString(9),
 			Derivacao:  getString(10),
-			QuantAnt:   getFloat(11),
-			QtdAtual:   getFloat(12),
-			IdOperacao: getInt(13),
-			SeqIte:     getInt(14),
+			QtdProd:    getFloat(11), // Novo campo mapeado (índice 11)
+			QuantAnt:   getFloat(12),
+			QtdAtual:   getFloat(13),
+			IdOperacao: getInt(14),
+			SeqIte:     getInt(15),
 		})
 	}
 	
