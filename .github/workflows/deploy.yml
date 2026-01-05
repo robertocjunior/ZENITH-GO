@@ -59,9 +59,10 @@ jobs:
       - name: Update, Restart and Rollback Check
         run: |
           # 1. Configurações
-          # GARANTIA: O caminho exato da pasta onde está o docker-compose.yml
           PROJECT_DIR="/home/nicocr/zenith"
-          APP_PORT=8080
+          # URL final de teste
+          HEALTH_URL="https://zenith.nicocereais.com.br/apiv1/health"
+          
           IMAGE_URL="ghcr.io/${{ github.repository }}:latest"
           IMAGE_URL=$(echo "$IMAGE_URL" | tr '[:upper:]' '[:lower:]')
 
@@ -76,11 +77,10 @@ jobs:
           fi
 
           # 2. Identificar imagem antiga (para rollback)
-          # O '|| true' impede que o script falhe se for o primeiro deploy (container não existe)
           OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' zenith-api-1 2>/dev/null || true)
           
           if [ -z "$OLD_IMAGE_ID" ]; then
-             echo "🆕 Nenhum container anterior encontrado (Primeiro Deploy ou container parado)."
+             echo "🆕 Nenhum container anterior encontrado."
           else
              echo "💾 ID da versão atual para backup: $OLD_IMAGE_ID"
           fi
@@ -93,15 +93,16 @@ jobs:
           docker compose up -d --force-recreate
 
           # 4. Teste de Saúde
-          echo "⏳ Aguardando 60 segundos para subir..."
-          sleep 60
+          echo "⏳ Aguardando 30 segundos para subir..."
+          sleep 30
 
-          # Verifica se responde 200 OK
-          if curl --silent --fail "http://localhost:$APP_PORT/apiv1/health"; then
-              echo "✅ SUCESSO! Aplicação está online."
+          # Verifica se a URL pública responde 200 OK
+          echo "🔍 Testando URL: $HEALTH_URL"
+          if curl --silent --fail "$HEALTH_URL"; then
+              echo "✅ SUCESSO! Aplicação está online e acessível publicamente."
               docker image prune -f
           else
-              echo "🚨 FALHA! Aplicação não respondeu."
+              echo "🚨 FALHA! A URL $HEALTH_URL não respondeu corretamente."
               echo "↩️ INICIANDO ROLLBACK..."
               
               if [ -n "$OLD_IMAGE_ID" ]; then
@@ -111,7 +112,6 @@ jobs:
                   exit 1
               else
                   echo "❌ Impossível fazer rollback (não havia versão anterior)."
-                  # Não damos exit 1 aqui para você poder debugar o container quebrado
                   exit 1
               fi
           fi
