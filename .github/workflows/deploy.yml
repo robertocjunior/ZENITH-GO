@@ -1,16 +1,15 @@
-name: Build and Publish Docker Image
+name: CI/CD Pipeline (Hybrid)
 
-# Dispara quando há um push na branch main (ex: merge de um PR)
 on:
   push:
     branches: [ "main" ]
 
-# Permissões necessárias para enviar a imagem ao GitHub Container Registry
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # --- JOB 1: CONSTRUIR NA NUVEM (Rápido e poupa sua CPU) ---
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
@@ -21,11 +20,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Configura o Docker Buildx (necessário para builds modernos)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Login no GitHub Container Registry
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
@@ -33,22 +30,79 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extrai metadados (tags, labels) para o Docker
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=sha,format=long
+          tags: type=raw,value=latest
 
-      # Constrói a imagem e faz o push
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  # --- JOB 2: DEPLOY LOCAL (Roda dentro do seu servidor 192.168...) ---
+  deploy-local:
+    needs: build-and-push
+    runs-on: self-hosted  # <--- ISSO DIZ PARA RODAR NO SEU SERVIDOR
+
+    steps:
+      # Não precisa de checkout do código se você já tem a pasta configurada lá
+      
+      - name: Login to GitHub Container Registry (Local)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update, Restart and Rollback Check
+        run: |
+          # 1. Configurações
+          PROJECT_DIR="/home/nicocr/zenith"
+          APP_PORT=8080   # Ajuste se sua porta externa for outra
+          IMAGE_URL="ghcr.io/${{ github.repository }}:latest"
+          # Garante minúsculas
+          IMAGE_URL=$(echo "$IMAGE_URL" | tr '[:upper:]' '[:lower:]')
+
+          echo "📂 Acessando diretório do projeto..."
+          cd "$PROJECT_DIR" || { echo "❌ Erro: Pasta $PROJECT_DIR não existe!"; exit 1; }
+
+          # 2. Identificar imagem antiga (para rollback)
+          OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' zenith-api-1 2>/dev/null)
+          echo "💾 ID da versão atual: $OLD_IMAGE_ID"
+
+          # 3. Atualizar
+          echo "⬇️ Baixando nova imagem..."
+          docker compose pull
+          
+          echo "🚀 Recriando containers..."
+          docker compose up -d --force-recreate
+
+          # 4. Teste de Saúde
+          echo "⏳ Aguardando 60 segundos para subir..."
+          sleep 60
+
+          # Verifica se responde 200 OK
+          if curl --silent --fail "http://localhost:$APP_PORT/apiv1/health"; then
+              echo "✅ SUCESSO! Aplicação está online."
+              docker image prune -f # Limpa lixo
+          else
+              echo "🚨 FALHA! Aplicação não respondeu."
+              echo "↩️ INICIANDO ROLLBACK..."
+              
+              if [ -n "$OLD_IMAGE_ID" ]; then
+                  # Retagueia a imagem antiga como 'latest' localmente para forçar o compose a usá-la
+                  docker tag "$OLD_IMAGE_ID" "$IMAGE_URL"
+                  docker compose up -d --force-recreate
+                  echo "✅ Rollback executado com sucesso."
+                  exit 1 # Falha o pipeline para avisar você
+              else
+                  echo "❌ Impossível fazer rollback (sem ID anterior)."
+                  exit 1
+              fi
+          fi
