@@ -58,7 +58,7 @@ func (c *Client) ExecuteServiceWithCookie(ctx context.Context, serviceName strin
 	req.Header.Set("Cookie", fmt.Sprintf("JSESSIONID=%s", snkSessionId))
 	req.Header.Set("Content-Type", "application/json")
 
-	slog.Debug("Calling Sankhya Cookie Service", "service", serviceName) 
+	slog.Debug("Calling Sankhya Cookie Service", "service", serviceName)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -127,7 +127,7 @@ func (c *Client) ExecuteTransaction(ctx context.Context, input TransactionInput,
 // handleCorrecao trata a lógica específica de correção de estoque
 func (c *Client) handleCorrecao(ctx context.Context, input TransactionInput, snkSessionId string) (string, error) {
 	slog.Info("Iniciando Correção de Estoque", "user", input.CodUsu)
-	
+
 	payload := input.Payload
 	codArm := int(safeFloat64(payload["codarm"]))
 	sequencia := int(safeFloat64(payload["sequencia"]))
@@ -232,7 +232,7 @@ func (c *Client) getOriginData(ctx context.Context, codArm int, sequencia int) (
 // handlePicking: Lógica exclusiva para Picking (Desacoplada)
 func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkSessionId string, perms *UserPermissions) (string, error) {
 	slog.Info("Iniciando Picking", "user", input.CodUsu)
-	
+
 	payload := input.Payload
 
 	var origemCodArm, origemSeq int
@@ -292,19 +292,20 @@ func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkS
 		return "", fmt.Errorf("não retornou SEQBAI")
 	}
 	seqBai := resHeader.ResponseBody.Result[0][0]
-	
+
 	if len(rowsDest) > 0 {
 		destProd := fmt.Sprintf("%.0f", safeFloat64(rowsDest[0][0]))
 		destCurrentQtd := safeFloat64(rowsDest[0][1])
 
 		if destProd != "0" {
 			if destProd == serverCodProd {
+				// Lógica de Picking mantém o merge pois é reposição controlada
 				records = append(records, DatasetRecord{
 					Values: map[string]string{
 						"0": seqBai,
 						"1": fmt.Sprintf("%d", destCodArm),
 						"2": destSeq,
-						"3": "", 
+						"3": "",
 						"4": "",
 						"5": fmtQtd(destCurrentQtd),
 						"6": "S",
@@ -396,7 +397,7 @@ func (c *Client) handlePicking(ctx context.Context, input TransactionInput, snkS
 // handleMovimentacao: Baixa e Transferência
 func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput, snkSessionId string, perms *UserPermissions) (string, error) {
 	slog.Info("Iniciando Movimentação", "type", input.Type, "user", input.CodUsu)
-	
+
 	payload := input.Payload
 
 	var origemCodArm, origemSeq int
@@ -454,31 +455,14 @@ func (c *Client) handleMovimentacao(ctx context.Context, input TransactionInput,
 			},
 		})
 	} else {
+		// --- LÓGICA DE TRANSFERÊNCIA ---
 		destino := payload["destino"].(map[string]any)
 		destCodArm := int(safeFloat64(destino["armazemDestino"]))
 		destSeq := safeString(destino["enderecoDestino"])
 		destQtdUser := destino["quantidade"]
 
-		sqlDest := fmt.Sprintf("SELECT CODPROD, QTDPRO FROM AD_CADEND WHERE SEQEND = '%s' AND CODARM = %d",
-			sanitizeStringForSql(destSeq), destCodArm)
-
-		rowsDest, _ := c.executeQuery(ctx, sqlDest)
-
-		if len(rowsDest) > 0 {
-			// Lógica de Merge
-			destQtd := safeFloat64(rowsDest[0][1])
-			records = append(records, DatasetRecord{
-				Values: map[string]string{
-					"0": seqBai,
-					"1": fmt.Sprintf("%d", destCodArm),
-					"2": destSeq,
-					"3": "",
-					"4": "",
-					"5": fmt.Sprintf("%.3f", destQtd),
-					"6": "S",
-				},
-			})
-		}
+		// [REMOVIDO] Lógica de Merge que causava o erro ORA-20101 ao tentar dar baixa no destino.
+		// O sistema agora envia apenas a instrução de transferência da origem para o destino.
 
 		records = append(records, DatasetRecord{
 			Values: map[string]string{
