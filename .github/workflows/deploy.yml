@@ -3,6 +3,16 @@ name: CI/CD Pipeline (Hybrid)
 on:
   push:
     branches: [ "main" ]
+    # --- NOVO BLOCO: IGNORAR ARQUIVOS ---
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+      - '.dockerignore'
+      - '.gitignore'
+      - 'docs/**'       # Qualquer coisa dentro da pasta docs
+      - '**/*.md'       # Qualquer arquivo markdown em qualquer pasta
+      - '.air.toml'     # Configuração de hot-reload local
+    # ------------------------------------
 
 env:
   REGISTRY: ghcr.io
@@ -49,7 +59,6 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      # 1. BAIXA O CÓDIGO NOVO (Incluindo o docker-compose.yml atualizado)
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -74,12 +83,8 @@ jobs:
           mkdir -p "$PROJECT_DIR"
           
           # 2. Atualiza o docker-compose.yml
-          # O arquivo está na pasta atual (pelo checkout), copiamos para a pasta de produção
           echo "📂 Atualizando infraestrutura (docker-compose.yml)..."
           cp docker-compose.yml "$PROJECT_DIR/docker-compose.yml"
-          
-          # Se tiver pastas de config extras (como nginx), copie também:
-          # cp -r nginx "$PROJECT_DIR/"
 
           cd "$PROJECT_DIR" || exit 1
 
@@ -93,7 +98,6 @@ jobs:
           # 5. Deploy
           echo "⬇️ Baixando imagens e recriando..."
           docker compose pull
-          # Remove orphans garante que se você removeu um serviço do arquivo, ele suma do docker
           docker compose up -d --force-recreate --remove-orphans
 
           # 6. Teste de Saúde

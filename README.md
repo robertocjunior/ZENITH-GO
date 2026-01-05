@@ -7,6 +7,7 @@
 <p align="center">
   <img alt="Go" src="https://img.shields.io/badge/Go-1.23+-00ADD8?style=for-the-badge&logo=go&logoColor=white">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Available-2496ED?style=for-the-badge&logo=docker&logoColor=white">
+  <img alt="CI/CD" src="https://img.shields.io/badge/GitHub%20Actions-Hybrid%20Pipeline-2088FF?style=for-the-badge&logo=github-actions&logoColor=white">
   <img alt="Sankhya Integration" src="https://img.shields.io/badge/Sankhya-Integrated-green?style=for-the-badge">
 </p>
 
@@ -16,6 +17,7 @@
   <a href="#architecture">Architecture</a> •
   <a href="#getting-started">Getting Started</a> •
   <a href="#configuration">Configuration</a> •
+  <a href="#deployment--cicd">Deployment & CI/CD</a> •
   <a href="#api-endpoints">API Endpoints</a> •
   <a href="#license">License</a>
 </p>
@@ -72,7 +74,7 @@ This is the easiest way to run Zenith-Go on any operating system (Windows, Linux
 
 1.  **Clone the repository**
     ```sh
-    git clone https://github.com/robertocjunior/zenith-go.git
+    git clone [https://github.com/robertocjunior/zenith-go.git](https://github.com/robertocjunior/zenith-go.git)
     cd zenith-go
     ```
 2.  **Configure Environment**
@@ -95,7 +97,7 @@ If you want to modify the code and test without Docker.
 1.  **Clone and Install**
     ```sh
     # Clone the repository
-    git clone https://github.com/robertocjunior/zenith-go.git
+    git clone [https://github.com/robertocjunior/zenith-go.git](https://github.com/robertocjunior/zenith-go.git)
     cd zenith-go
 
     # Download dependencies
@@ -114,18 +116,43 @@ If you want to modify the code and test without Docker.
 
 To run the system, create a `.env` file in the project root. Below are all the available settings.
 
-| Variável                | Obrigatório | Descrição                                                                               | Padrão   |
-| ----------------------- | ----------- | --------------------------------------------------------------------------------------- | -------- |
-| **SANKHYA_API_URL**     | Sim         | Base URL for the Sankhya API (e.g., `https://api.sankhya.com.br`). Used for login and queries. |          |
-| **SANKHYA_TRANSACTION_URL** | Sim         | Specific URL for executing services/transactions (e.g., `https://api.sankhya.com.br/mge`). |          |
-| **SANKHYA_APPKEY**      | Sim         | Application key provided by Sankhya.                                                    |          |
-| **SANKHYA_TOKEN**       | Sim         | Application token.                                                                      |          |
-| **SANKHYA_USERNAME**    | Sim         | Service user (admin or integrator) in Sankhya.                                          |          |
-| **SANKHYA_PASSWORD**    | Sim         | Password for the service user.                                                          |          |
-| **JWT_SECRET**          | Sim         | Long and random secret key to sign session tokens.                                      |          |
-| **PORT**                | Não         | Server port.                                                                            | `8080`   |
-| **LOG_MAX_SIZE_MB**     | Não         | Maximum size of a log file before rotation (in MB).                                     | `100`    |
-| **LOG_MAX_AGE_DAYS**    | Não         | Days to keep log files (0 = do not delete by age, only by backup count).                | `0`      |
+| Variable | Required | Description | Default |
+| :--- | :---: | :--- | :--- |
+| **SANKHYA_API_URL** | Yes | Base URL for the Sankhya API (e.g., `https://api.sankhya.com.br`). | |
+| **SANKHYA_TRANSACTION_URL** | Yes | URL for executing services/transactions (MGE). | |
+| **SANKHYA_APPKEY** | Yes | Application key provided by Sankhya. | |
+| **SANKHYA_TOKEN** | Yes | Application token. | |
+| **SANKHYA_USERNAME** | Yes | Service user (admin or integrator) in Sankhya. | |
+| **SANKHYA_PASSWORD** | Yes | Password for the service user. | |
+| **JWT_SECRET** | Yes | Long and random secret key to sign session tokens. | |
+| **PORT** | No | Server port. | `8080` |
+| **LOG_MAX_SIZE_MB** | No | Maximum size of a log file before rotation (in MB). | `100` |
+| **LOG_MAX_AGE_DAYS** | No | Days to keep log files (0 = keep forever/backup based). | `0` |
+| **REDIS_ADDR** | No | Address of Redis instance (e.g., `redis-store:6379`). | |
+| **REDIS_PASSWORD** | No | Password for Redis authentication. | |
+| **EMAIL_NOTIFICATIONS_ENABLED** | No | Enable/Disable email alerts (`true`/`false`). | `false` |
+| **SMTP_HOST** | If enabled | SMTP Server Address (e.g., `smtp.office365.com`). | |
+| **SMTP_USER** | If enabled | Email account for sending notifications. | |
+| **SMTP_PASS** | If enabled | Email password. | |
+
+## Deployment & CI/CD
+
+This project uses a **Hybrid CI/CD Pipeline** via GitHub Actions to ensure zero-downtime deployments and automatic rollback.
+
+### Workflow Overview
+1.  **Build (Cloud)**: When code is pushed to `main`, GitHub Actions builds the Docker image and pushes it to **GitHub Container Registry (GHCR)**.
+2.  **Deploy (On-Premise)**: A **Self-Hosted Runner** installed on the physical server detects the completion of the build.
+3.  **Secret Injection**: Production credentials (`.env`) are securely injected from GitHub Secrets directly into the server during deployment.
+4.  **Health Check & Rollback**:
+    * The runner updates the containers (`docker compose up -d`).
+    * It waits 30 seconds and tests the public health endpoint (`/apiv1/health`).
+    * **Success**: Old images are pruned.
+    * **Failure**: The system **automatically reverts** to the previous Docker image ID.
+
+### Infrastructure
+* **Container Registry**: GHCR (Private)
+* **Orchestration**: Docker Compose
+* **Reverse Proxy**: NGINX (Load Balancing & SSL)
 
 ## API Endpoints
 
