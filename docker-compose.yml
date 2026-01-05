@@ -1,9 +1,7 @@
 services:
   # --- INSTÂNCIA 1 DA API ---
   zenith-api-1:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/robertocjunior/zenith-go:latest
     hostname: "node-01"
     restart: always
     environment:
@@ -17,9 +15,7 @@ services:
 
   # --- INSTÂNCIA 2 DA API ---
   zenith-api-2:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/robertocjunior/zenith-go:latest
     hostname: "node-02"
     restart: always
     environment:
@@ -27,7 +23,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./logs_host/api2:/root/logs # Logs separados para debug
+      - ./logs_host/api2:/root/logs
     depends_on:
       - redis-store
 
@@ -50,7 +46,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/dashboard.html:/usr/share/nginx/html/dashboard.html:ro
     ports:
-      - "8585:80" # Porta de entrada para o mundo
+      - "${PORT}:80" # Porta de entrada para o mundo
     depends_on:
       - zenith-api-1
       - zenith-api-2

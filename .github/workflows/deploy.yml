@@ -49,6 +49,10 @@ jobs:
     runs-on: self-hosted
 
     steps:
+      # 1. BAIXA O CÓDIGO NOVO (Incluindo o docker-compose.yml atualizado)
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Login to GitHub Container Registry (Local)
         uses: docker/login-action@v3
         with:
@@ -56,76 +60,59 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update Env, Restart and Check
-        # AQUI ESTÁ A MÁGICA: Passamos o segredo como variável de ambiente para o script
+      - name: Deploy Process
         env:
           ENV_FILE_CONTENT: ${{ secrets.PROD_ENV_FILE }}
         run: |
-          # 1. Configurações
+          # --- CONFIGURAÇÕES ---
           PROJECT_DIR="/home/nicocr/zenith"
-          # Lemos a porta direto do conteúdo do .env para usar no teste do curl
-          # (Isso é um truque para pegar a porta sem precisar configurar outro secret)
-          APP_PORT=$(echo "$ENV_FILE_CONTENT" | grep "^PORT=" | cut -d'=' -f2)
-          # Se não achar porta no arquivo, usa 8080 padrão
-          APP_PORT=${APP_PORT:-8080}
-          
           HEALTH_URL="https://zenith.nicocereais.com.br/apiv1/health"
-          
           IMAGE_URL="ghcr.io/${{ github.repository }}:latest"
           IMAGE_URL=$(echo "$IMAGE_URL" | tr '[:upper:]' '[:lower:]')
 
-          echo "📂 Verificando diretório..."
-          if [ -d "$PROJECT_DIR" ]; then
-            cd "$PROJECT_DIR"
-            echo "✅ Entrou em: $(pwd)"
-          else
-            echo "❌ ERRO CRÍTICO: A pasta $PROJECT_DIR não existe no servidor!"
-            exit 1
-          fi
+          # 1. Garante que a pasta existe
+          mkdir -p "$PROJECT_DIR"
+          
+          # 2. Atualiza o docker-compose.yml
+          # O arquivo está na pasta atual (pelo checkout), copiamos para a pasta de produção
+          echo "📂 Atualizando infraestrutura (docker-compose.yml)..."
+          cp docker-compose.yml "$PROJECT_DIR/docker-compose.yml"
+          
+          # Se tiver pastas de config extras (como nginx), copie também:
+          # cp -r nginx "$PROJECT_DIR/"
 
-          # 2. ATUALIZAR O ARQUIVO .ENV
-          echo "📝 Atualizando arquivo .env com as credenciais do GitHub..."
+          cd "$PROJECT_DIR" || exit 1
+
+          # 3. Atualiza o .env (Secrets)
+          echo "📝 Restaurando segredos (.env)..."
           echo "$ENV_FILE_CONTENT" > .env
           
-          # 3. Identificar imagem antiga (para rollback)
+          # 4. Backup ID para Rollback
           OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' zenith-api-1 2>/dev/null || true)
           
-          if [ -z "$OLD_IMAGE_ID" ]; then
-             echo "🆕 Nenhum container anterior encontrado."
-          else
-             echo "💾 ID da versão atual para backup: $OLD_IMAGE_ID"
-          fi
-
-          # 4. Atualizar
-          echo "⬇️ Baixando nova imagem..."
+          # 5. Deploy
+          echo "⬇️ Baixando imagens e recriando..."
           docker compose pull
-          
-          echo "🚀 Recriando containers..."
-          # O docker compose vai ler o .env que acabamos de criar automaticamente
-          docker compose up -d --force-recreate
+          # Remove orphans garante que se você removeu um serviço do arquivo, ele suma do docker
+          docker compose up -d --force-recreate --remove-orphans
 
-          # 5. Teste de Saúde
-          echo "⏳ Aguardando 30 segundos para subir..."
+          # 6. Teste de Saúde
+          echo "⏳ Aguardando 30s..."
           sleep 30
 
-          echo "🔍 Testando URL: $HEALTH_URL"
+          echo "🔍 Testando: $HEALTH_URL"
           if curl --silent --fail "$HEALTH_URL"; then
-              echo "✅ SUCESSO! Aplicação está online e atualizada."
+              echo "✅ DEPLOY SUCESSO!"
               docker image prune -f
           else
-              echo "🚨 FALHA! A URL $HEALTH_URL não respondeu corretamente."
-              echo "↩️ INICIANDO ROLLBACK..."
-              
+              echo "🚨 FALHA! Iniciando Rollback..."
               if [ -n "$OLD_IMAGE_ID" ]; then
-                  # Rollback: restaura a imagem antiga
                   docker tag "$OLD_IMAGE_ID" "$IMAGE_URL"
-                  # O .env novo continua lá, o que é bom, pois se o erro foi código, 
-                  # a configuração nova pode ser necessária.
                   docker compose up -d --force-recreate
-                  echo "✅ Rollback executado para versão: $OLD_IMAGE_ID"
+                  echo "✅ Rollback concluído."
                   exit 1
               else
-                  echo "❌ Impossível fazer rollback."
+                  echo "❌ Rollback impossível."
                   exit 1
               fi
           fi
