@@ -9,7 +9,6 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # --- JOB 1: CONSTRUIR NA NUVEM (Rápido e poupa sua CPU) ---
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
@@ -45,14 +44,11 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # --- JOB 2: DEPLOY LOCAL (Roda dentro do seu servidor 192.168...) ---
   deploy-local:
     needs: build-and-push
-    runs-on: self-hosted  # <--- ISSO DIZ PARA RODAR NO SEU SERVIDOR
+    runs-on: self-hosted
 
     steps:
-      # Não precisa de checkout do código se você já tem a pasta configurada lá
-      
       - name: Login to GitHub Container Registry (Local)
         uses: docker/login-action@v3
         with:
@@ -63,18 +59,31 @@ jobs:
       - name: Update, Restart and Rollback Check
         run: |
           # 1. Configurações
+          # GARANTIA: O caminho exato da pasta onde está o docker-compose.yml
           PROJECT_DIR="/home/nicocr/zenith"
-          APP_PORT=8080   # Ajuste se sua porta externa for outra
+          APP_PORT=8080
           IMAGE_URL="ghcr.io/${{ github.repository }}:latest"
-          # Garante minúsculas
           IMAGE_URL=$(echo "$IMAGE_URL" | tr '[:upper:]' '[:lower:]')
 
-          echo "📂 Acessando diretório do projeto..."
-          cd "$PROJECT_DIR" || { echo "❌ Erro: Pasta $PROJECT_DIR não existe!"; exit 1; }
+          echo "📂 Verificando diretório..."
+          if [ -d "$PROJECT_DIR" ]; then
+            cd "$PROJECT_DIR"
+            echo "✅ Entrou em: $(pwd)"
+          else
+            echo "❌ ERRO CRÍTICO: A pasta $PROJECT_DIR não existe no servidor!"
+            ls -la /home/nicocr/
+            exit 1
+          fi
 
           # 2. Identificar imagem antiga (para rollback)
-          OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' zenith-api-1 2>/dev/null)
-          echo "💾 ID da versão atual: $OLD_IMAGE_ID"
+          # O '|| true' impede que o script falhe se for o primeiro deploy (container não existe)
+          OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' zenith-api-1 2>/dev/null || true)
+          
+          if [ -z "$OLD_IMAGE_ID" ]; then
+             echo "🆕 Nenhum container anterior encontrado (Primeiro Deploy ou container parado)."
+          else
+             echo "💾 ID da versão atual para backup: $OLD_IMAGE_ID"
+          fi
 
           # 3. Atualizar
           echo "⬇️ Baixando nova imagem..."
@@ -90,19 +99,19 @@ jobs:
           # Verifica se responde 200 OK
           if curl --silent --fail "http://localhost:$APP_PORT/apiv1/health"; then
               echo "✅ SUCESSO! Aplicação está online."
-              docker image prune -f # Limpa lixo
+              docker image prune -f
           else
               echo "🚨 FALHA! Aplicação não respondeu."
               echo "↩️ INICIANDO ROLLBACK..."
               
               if [ -n "$OLD_IMAGE_ID" ]; then
-                  # Retagueia a imagem antiga como 'latest' localmente para forçar o compose a usá-la
                   docker tag "$OLD_IMAGE_ID" "$IMAGE_URL"
                   docker compose up -d --force-recreate
-                  echo "✅ Rollback executado com sucesso."
-                  exit 1 # Falha o pipeline para avisar você
+                  echo "✅ Rollback executado. Voltamos para a versão: $OLD_IMAGE_ID"
+                  exit 1
               else
-                  echo "❌ Impossível fazer rollback (sem ID anterior)."
+                  echo "❌ Impossível fazer rollback (não havia versão anterior)."
+                  # Não damos exit 1 aqui para você poder debugar o container quebrado
                   exit 1
               fi
           fi
