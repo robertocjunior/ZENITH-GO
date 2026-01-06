@@ -8,7 +8,7 @@
   <img alt="Go" src="https://img.shields.io/badge/Go-1.23+-00ADD8?style=for-the-badge&logo=go&logoColor=white">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Available-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="CI/CD" src="https://img.shields.io/badge/GitHub%20Actions-Hybrid%20Pipeline-2088FF?style=for-the-badge&logo=github-actions&logoColor=white">
-  <img alt="Sankhya Integration" src="https://img.shields.io/badge/Sankhya-Integrated-green?style=for-the-badge">
+  <img alt="Sankhya Integration" src="https://img.shields.io/badge/Sankhya-Integrated-52cc63?style=for-the-badge">
 </p>
 
 <p align="center">
