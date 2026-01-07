@@ -60,6 +60,9 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("Tentativa de login", "username", input.Username, "ip", r.RemoteAddr)
 
+	// Prepara meta inicial (ainda sem codusu)
+	meta := ErrorMeta{Username: input.Username}
+
 	finalDeviceToken := input.DeviceToken
 	if finalDeviceToken == "" {
 		finalDeviceToken = auth.NewDeviceToken()
@@ -69,19 +72,20 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	codUsuFloat, err := h.Client.VerifyUserAccess(ctx, input.Username)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			RespondError(w, r, h.Notifier, http.StatusGatewayTimeout, "Timeout no login", err, input)
+			RespondError(w, r, h.Notifier, http.StatusGatewayTimeout, "Timeout no login", err, input, meta)
 			return
 		}
 		if errors.Is(err, sankhya.ErrUserNotFound) {
-			RespondError(w, r, h.Notifier, http.StatusNotFound, err.Error(), nil, input)
+			RespondError(w, r, h.Notifier, http.StatusNotFound, err.Error(), nil, input, meta)
 		} else if errors.Is(err, sankhya.ErrUserNotAuthorized) {
-			RespondError(w, r, h.Notifier, http.StatusForbidden, err.Error(), nil, input)
+			RespondError(w, r, h.Notifier, http.StatusForbidden, err.Error(), nil, input, meta)
 		} else {
-			RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro interno ao verificar usuário", err, input)
+			RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro interno ao verificar usuário", err, input, meta)
 		}
 		return
 	}
 	codUsu := int(codUsuFloat)
+	meta.CodUsu = codUsu // Atualiza meta com ID descoberto
 
 	// 2. Verificar Dispositivo
 	if err := h.Client.VerifyDevice(ctx, codUsu, finalDeviceToken); err != nil {
@@ -94,27 +98,27 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao verificar dispositivo", err, input)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao verificar dispositivo", err, input, meta)
 		return
 	}
 
 	// 3. Login no Sankhya
 	snkJSession, err := h.Client.LoginUser(ctx, input.Username, input.Password)
 	if err != nil {
-		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Credenciais inválidas no ERP", err, input)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Credenciais inválidas no ERP", err, input, meta)
 		return
 	}
 
 	// 4. JWT
 	jwtToken, err := auth.GenerateToken(input.Username, codUsu, h.Config.JwtSecret)
 	if err != nil {
-		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao gerar JWT", err, input)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao gerar JWT", err, input, meta)
 		return
 	}
 
 	// 5. Redis 
 	if err := h.Session.Register(jwtToken, snkJSession); err != nil {
-		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao salvar sessão", err, input)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao salvar sessão", err, input, meta)
 		return
 	}
 
@@ -162,7 +166,8 @@ func (h *AuthHandler) HandleGetPermissions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
+	// ALTERADO: Recebe username também
+	codUsu, _, err := auth.ValidateToken(token, h.Config.JwtSecret)
 	if err != nil {
 		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return

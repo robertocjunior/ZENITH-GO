@@ -66,7 +66,8 @@ func (h *ProductHandler) HandleSearchItems(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
+	// ALTERADO: Ignora username
+	codUsu, _, err := auth.ValidateToken(token, h.Config.JwtSecret)
 	if err != nil {
 		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
@@ -105,7 +106,7 @@ func (h *ProductHandler) HandleGetItemDetails(w http.ResponseWriter, r *http.Req
 	}
 
 	token := getTokenFromHeaderProduct(r)
-	if _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+	if _, _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
 		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
 	}
@@ -144,7 +145,7 @@ func (h *ProductHandler) HandleGetPickingLocations(w http.ResponseWriter, r *htt
 	}
 
 	token := getTokenFromHeaderProduct(r)
-	if _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+	if _, _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
 		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
 	}
@@ -179,7 +180,7 @@ func (h *ProductHandler) HandleGetHistory(w http.ResponseWriter, r *http.Request
 	}
 
 	token := getTokenFromHeaderProduct(r)
-	codUsu, err := auth.ValidateToken(token, h.Config.JwtSecret)
+	codUsu, _, err := auth.ValidateToken(token, h.Config.JwtSecret)
 	if err != nil {
 		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
@@ -195,7 +196,6 @@ func (h *ProductHandler) HandleGetHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// CORREÇÃO: Log adicionado para utilizar a variável codUsu
 	slog.Info("Consulta de Histórico", "user", codUsu, "dtIni", input.DtIni, "dtFim", input.DtFim)
 
 	history, err := h.Client.GetHistory(ctx, input.DtIni, input.DtFim, input.CodUsu)

@@ -20,8 +20,9 @@ func GenerateToken(username string, codUsu int, secret string) (string, error) {
 	return token.SignedString([]byte(secret))
 }
 
-// ValidateToken verifica a assinatura e retorna o CODUSU se válido
-func ValidateToken(tokenString string, secret string) (int, error) {
+// ValidateToken verifica a assinatura e retorna o CODUSU e USERNAME se válido
+// Alterado para retornar (int, string, error)
+func ValidateToken(tokenString string, secret string) (int, string, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("método de assinatura inesperado: %v", token.Header["alg"])
@@ -30,16 +31,22 @@ func ValidateToken(tokenString string, secret string) (int, error) {
 	})
 
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 		codUsuFloat, ok := claims["codusu"].(float64)
 		if !ok {
-			return 0, fmt.Errorf("codusu não encontrado no token")
+			return 0, "", fmt.Errorf("codusu não encontrado no token")
 		}
-		return int(codUsuFloat), nil
+		
+		username, ok := claims["username"].(string)
+		if !ok {
+			username = "UNKNOWN"
+		}
+
+		return int(codUsuFloat), username, nil
 	}
 
-	return 0, fmt.Errorf("token inválido")
+	return 0, "", fmt.Errorf("token inválido")
 }

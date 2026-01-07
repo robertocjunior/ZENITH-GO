@@ -53,7 +53,8 @@ func (h *TransactionHandler) HandleExecuteTransaction(w http.ResponseWriter, r *
 		return
 	}
 
-	codUsu, err := auth.ValidateToken(bearerToken, h.JwtSecret)
+	// ALTERADO: Agora captura username também
+	codUsu, username, err := auth.ValidateToken(bearerToken, h.JwtSecret)
 	if err != nil {
 		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
@@ -78,7 +79,6 @@ func (h *TransactionHandler) HandleExecuteTransaction(w http.ResponseWriter, r *
 
 	msg, err := h.Client.ExecuteTransaction(ctx, input, snkSessionId)
 	if err != nil {
-		// CORREÇÃO: Trata a sessão expirada do Sankhya (Status 3)
 		if errors.Is(err, sankhya.ErrUserSessionExpired) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -94,8 +94,14 @@ func (h *TransactionHandler) HandleExecuteTransaction(w http.ResponseWriter, r *
 			status = http.StatusForbidden
 		}
 		
-		// ATUALIZADO: Passamos 'req' (o payload) no final para ser incluído no email
-		RespondError(w, r, h.Notifier, status, "Falha na transação", err, req)
+		// ALTERADO: Cria o metadata do usuário e passa junto com a request
+		meta := ErrorMeta{
+			CodUsu:    codUsu,
+			Username:  username,
+			SessionID: snkSessionId,
+		}
+		
+		RespondError(w, r, h.Notifier, status, "Falha na transação", err, req, meta)
 		return
 	}
 
