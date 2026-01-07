@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/smtp"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"zenith-go/internal/config"
 )
 
-// Link direto para a logo (Raw GitHub) - Melhor compatibilidade com Gmail/Outlook
-const zenithLogoUrl = "https://raw.githubusercontent.com/robertocjunior/ZENITH-GO/main/docs/zenith.svg"
+// Link direto para a logo (Raw GitHub)
+const zenithLogoUrl = "https://raw.githubusercontent.com/robertocjunior/assets/refs/heads/main/zenith.svg"
 
 type EmailService struct {
 	cfg *config.Config
@@ -22,7 +23,50 @@ func NewEmailService(cfg *config.Config) *EmailService {
 	return &EmailService{cfg: cfg}
 }
 
-// sendMail helper privado com InsecureSkipVerify (para hosts compartilhados)
+// Regex para limpar tags HTML de strings simples (assuntos/títulos)
+var htmlTagRegex = regexp.MustCompile(`<[^>]*>`)
+
+// Remove tags HTML para usar no Assunto do Email
+func stripTags(s string) string {
+	return htmlTagRegex.ReplaceAllString(s, "")
+}
+
+// isHTML detecta se a string parece conter HTML do Sankhya
+func isHTML(s string) bool {
+	sLower := strings.ToLower(s)
+	return strings.Contains(sLower, "<br") || 
+		   strings.Contains(sLower, "<b") || 
+		   strings.Contains(sLower, "<p") || 
+		   strings.Contains(sLower, "<font") ||
+		   strings.Contains(sLower, "<html")
+}
+
+// cleanErrorMessage remove poluição do HTML legado do Sankhya
+func cleanErrorMessage(rawMsg string) string {
+	// 1. Remove escapes de aspas duplas vindos do JSON/Oracle (ex: \" -> ")
+	msg := strings.ReplaceAll(rawMsg, `\"`, `"`)
+
+	// 2. REMOVE A IMAGEM ESPECÍFICA SOLICITADA
+	msg = strings.ReplaceAll(msg, `<img src="http://www.sankhya.com.br/imagens/logo-sankhya.png"></img>`, "")
+	// Caso venha com escape
+	msg = strings.ReplaceAll(msg, `<img src=\"http://www.sankhya.com.br/imagens/logo-sankhya.png\"></img>`, "")
+	// Caso venha self-closing
+	msg = strings.ReplaceAll(msg, `<img src="http://www.sankhya.com.br/imagens/logo-sankhya.png"/>`, "")
+
+	// 3. Remove links envolvendo a imagem se houver wrapper
+	msg = strings.ReplaceAll(msg, `<a href="http://www.sankhya.com.br" target="_blank"></a>`, "")
+
+	// 4. Reduz múltiplos <br> consecutivos para apenas dois
+	for strings.Contains(msg, "<br><br><br>") {
+		msg = strings.ReplaceAll(msg, "<br><br><br>", "<br><br>")
+	}
+	
+	// 5. Remove excesso de quebras no início ou tags vazias comuns
+	msg = strings.ReplaceAll(msg, "<p align='center'></p>", "")
+
+	return msg
+}
+
 func (s *EmailService) sendMail(to []string, msg []byte) error {
 	addr := fmt.Sprintf("%s:%d", s.cfg.SMTPHost, s.cfg.SMTPPort)
 
@@ -73,7 +117,6 @@ func (s *EmailService) sendMail(to []string, msg []byte) error {
 	return conn.Quit()
 }
 
-// getHtmlTemplate monta o e-mail responsivo padrão Zenith-Go
 func (s *EmailService) getHtmlTemplate(title string, bodyContent string) string {
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="pt-BR">
@@ -91,12 +134,40 @@ func (s *EmailService) getHtmlTemplate(title string, bodyContent string) string 
         .details-grid { display: grid; grid-template-columns: 150px 1fr; gap: 10px 20px; margin-top: 20px; font-size: 14px; }
         .details-grid dt { font-weight: bold; color: #555; }
         .details-grid dd { margin: 0; background-color: #f9f9f9; padding: 8px; border-radius: 6px; word-break: break-all; }
-        .details-grid dd.env-prod { background-color: #ffebee; color: #c62828; font-weight: bold; border: 1px solid #ffcdd2; }
         .code-block { margin-top: 30px; }
-        .code-block h3 { font-size: 16px; color: #333; margin-bottom: 10px; }
+        .code-block h3 { font-size: 16px; color: #333; margin-bottom: 10px; border-left: 4px solid #00529B; padding-left: 10px; }
+        
+        /* Estilo para erros em texto puro */
         .code-block pre { background-color: #2d2d2d; color: #f2f2f2; padding: 15px; border-radius: 6px; white-space: pre-wrap; word-wrap: break-word; font-family: 'Courier New', Courier, monospace; font-size: 13px; }
+        
+        /* Estilo MELHORADO para erros em HTML Sankhya */
+        .html-error-container { 
+            background-color: #ffffff; 
+            border: 1px solid #e0e0e0; 
+            padding: 20px; 
+            border-radius: 8px; 
+            overflow-y: auto; 
+            max-height: 500px; 
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.03);
+        }
+
+        /* RESET AGRESSIVO: Força que todo conteúdo dentro do erro (incluindo tags <font> do Sankhya)
+           tenha tamanho e cor normais, ignorando o size="12" gigante.
+        */
+        .html-error-container * {
+            font-size: 14px !important;
+            font-family: Arial, sans-serif !important;
+            color: #333 !important;
+            line-height: 1.5 !important;
+            background-color: transparent !important;
+        }
+
+        /* Mantém negrito onde deve ter */
+        .html-error-container b, .html-error-container strong {
+            font-weight: bold !important;
+        }
+
         .footer { background-color: #eef2f5; color: #888; font-size: 12px; text-align: center; padding: 20px; }
-        code { font-family: 'Courier New', Courier, monospace; }
         @media (max-width: 600px) { .details-grid { grid-template-columns: 1fr; } .content { padding: 20px; } }
     </style>
 </head>
@@ -117,7 +188,6 @@ func (s *EmailService) getHtmlTemplate(title string, bodyContent string) string 
 </html>`, zenithLogoUrl, title, bodyContent)
 }
 
-// SendTestEmail envia e-mail de teste formatado
 func (s *EmailService) SendTestEmail(recipient string) error {
 	if !s.cfg.EmailEnabled {
 		return fmt.Errorf("envio de e-mail desabilitado no .env")
@@ -126,7 +196,6 @@ func (s *EmailService) SendTestEmail(recipient string) error {
 	title := "Teste de Configuração"
 	subject := "🧪 [Zenith-Go] Teste de Envio de E-mail"
 
-	// Conteúdo do corpo
 	bodyContent := fmt.Sprintf(`
 		<h2 style="color: #00add8; border-bottom-color: #00add8;">Configuração Validada com Sucesso</h2>
 		<p>Olá,</p>
@@ -168,7 +237,6 @@ Authentication accepted.</pre>
 	return s.sendMail([]string{recipient}, []byte(message))
 }
 
-// SendError envia alerta de erro formatado
 func (s *EmailService) SendError(err error, contextInfo map[string]string) {
 	if !s.cfg.EmailEnabled || len(s.cfg.EmailRecipients) == 0 {
 		return
@@ -181,12 +249,22 @@ func (s *EmailService) SendError(err error, contextInfo map[string]string) {
 			}
 		}()
 
-		title := "Alerta de Erro no Sistema"
-		subject := fmt.Sprintf("🚨 [Zenith-Go] Erro: %s", truncate(err.Error(), 50))
-
-		// Monta a Grid de Detalhes dinamicamente
-		detailsHtml := ""
+		// 1. Limpeza preliminar para o título
+		rawErrString := err.Error()
+		cleanErrTitle := stripTags(rawErrString)
 		
+		title := "Alerta de Erro no Sistema"
+		subject := fmt.Sprintf("🚨 [Zenith-Go] Erro: %s", truncate(cleanErrTitle, 50))
+
+		// 2. Extrai Payload e remove do map
+		payloadBlock := ""
+		if payload, ok := contextInfo["Payload"]; ok {
+			payloadBlock = fmt.Sprintf(`<div class="code-block"><h3>Payload da Requisição (Sanitizado):</h3><pre>%s</pre></div>`, payload)
+			delete(contextInfo, "Payload")
+		}
+
+		// 3. Monta a Grid de Detalhes
+		detailsHtml := ""
 		keys := make([]string, 0, len(contextInfo))
 		for k := range contextInfo {
 			keys = append(keys, k)
@@ -194,10 +272,33 @@ func (s *EmailService) SendError(err error, contextInfo map[string]string) {
 		sort.Strings(keys)
 
 		detailsHtml += fmt.Sprintf("<dt>Data e Hora:</dt><dd>%s</dd>", time.Now().Format("02/01/2006, 15:04:05"))
-		
 		for _, k := range keys {
 			val := contextInfo[k]
 			detailsHtml += fmt.Sprintf("<dt>%s:</dt><dd>%s</dd>", k, val)
+		}
+
+		// 4. Lógica de renderização do erro principal
+		errorBlock := ""
+		
+		// Limpa o HTML da mensagem de erro (apenas remove imagens e limpa estrutura, SEM mexer no encoding)
+		finalErrorMsg := cleanErrorMessage(rawErrString)
+
+		if isHTML(finalErrorMsg) {
+			// Se for HTML (agora limpo), renderiza no container com CSS resetado
+			errorBlock = fmt.Sprintf(`
+			<div class="code-block">
+				<h3>Detalhes do Erro (Formatado):</h3>
+				<div class="html-error-container">
+					%s
+				</div>
+			</div>`, finalErrorMsg)
+		} else {
+			// Texto puro
+			errorBlock = fmt.Sprintf(`
+			<div class="code-block">
+				<h3>Stack Trace / Detalhes do Erro:</h3>
+				<pre>%s</pre>
+			</div>`, finalErrorMsg)
 		}
 
 		bodyContent := fmt.Sprintf(`
@@ -205,12 +306,11 @@ func (s *EmailService) SendError(err error, contextInfo map[string]string) {
 			<dl class="details-grid">
 				%s
 			</dl>
+			
+			%s
 
-			<div class="code-block">
-				<h3>Detalhes do Erro:</h3>
-				<pre>%s</pre>
-			</div>
-		`, truncate(err.Error(), 100), detailsHtml, err.Error())
+			%s
+		`, truncate(cleanErrTitle, 100), detailsHtml, payloadBlock, errorBlock)
 
 		fullHtml := s.getHtmlTemplate(title, bodyContent)
 

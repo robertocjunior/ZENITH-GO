@@ -94,7 +94,8 @@ func (h *TransactionHandler) HandleExecuteTransaction(w http.ResponseWriter, r *
 			status = http.StatusForbidden
 		}
 		
-		RespondError(w, r, h.Notifier, status, "Falha na transação", err)
+		// ATUALIZADO: Passamos 'req' (o payload) no final para ser incluído no email
+		RespondError(w, r, h.Notifier, status, "Falha na transação", err, req)
 		return
 	}
 

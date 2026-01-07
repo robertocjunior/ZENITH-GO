@@ -1,7 +1,12 @@
 services:
   # --- INSTÂNCIA 1 DA API ---
   zenith-api-1:
+    #imagem mais recente
     image: ghcr.io/robertocjunior/zenith-go:latest
+    #para teste local
+    #build:
+    #  context: .
+    #  dockerfile: Dockerfile
     hostname: "node-01"
     restart: always
     environment:
@@ -15,7 +20,12 @@ services:
 
   # --- INSTÂNCIA 2 DA API ---
   zenith-api-2:
+    #imagem mais recente
     image: ghcr.io/robertocjunior/zenith-go:latest
+    #para teste local
+    #build:
+    #  context: .
+    #  dockerfile: Dockerfile
     hostname: "node-02"
     restart: always
     environment:

@@ -1,0 +1,33 @@
+name: Scheduled PR Merger
+
+on:
+  schedule:
+    # 11:30 Brasil = 14:30 UTC
+    - cron: '30 14 * * *'
+  workflow_dispatch: # Para testar manualmente se quiser
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge-scheduled:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Merge PRs with label 'agendado'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔍 Procurando PRs com a label 'agendado'..."
+          
+          # Busca PRs abertos com a label
+          gh pr list --label "agendado" --state open --json number --jq '.[].number' | while read pr_number; do
+            if [ -n "$pr_number" ]; then
+              echo "✅ Fazendo merge do PR #$pr_number..."
+              # Faz o merge e apaga a branch
+              gh pr merge $pr_number --merge --delete-branch
+            fi
+          done

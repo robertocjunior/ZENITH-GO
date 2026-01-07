@@ -10,7 +10,7 @@ import (
 	"time"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
-	"zenith-go/internal/notification" // Import
+	"zenith-go/internal/notification" 
 	"zenith-go/internal/sankhya"
 )
 
@@ -18,7 +18,7 @@ type AuthHandler struct {
 	Client   *sankhya.Client
 	Config   *config.Config
 	Session  *auth.SessionManager
-	Notifier *notification.EmailService // Injeção
+	Notifier *notification.EmailService 
 }
 
 type loginInput struct {
@@ -69,15 +69,15 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	codUsuFloat, err := h.Client.VerifyUserAccess(ctx, input.Username)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			RespondError(w, r, h.Notifier, http.StatusGatewayTimeout, "Timeout no login", err)
+			RespondError(w, r, h.Notifier, http.StatusGatewayTimeout, "Timeout no login", err, input)
 			return
 		}
 		if errors.Is(err, sankhya.ErrUserNotFound) {
-			RespondError(w, r, h.Notifier, http.StatusNotFound, err.Error(), nil)
+			RespondError(w, r, h.Notifier, http.StatusNotFound, err.Error(), nil, input)
 		} else if errors.Is(err, sankhya.ErrUserNotAuthorized) {
-			RespondError(w, r, h.Notifier, http.StatusForbidden, err.Error(), nil)
+			RespondError(w, r, h.Notifier, http.StatusForbidden, err.Error(), nil, input)
 		} else {
-			RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro interno ao verificar usuário", err)
+			RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro interno ao verificar usuário", err, input)
 		}
 		return
 	}
@@ -94,27 +94,27 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao verificar dispositivo", err)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao verificar dispositivo", err, input)
 		return
 	}
 
 	// 3. Login no Sankhya
 	snkJSession, err := h.Client.LoginUser(ctx, input.Username, input.Password)
 	if err != nil {
-		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Credenciais inválidas no ERP", err)
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Credenciais inválidas no ERP", err, input)
 		return
 	}
 
 	// 4. JWT
 	jwtToken, err := auth.GenerateToken(input.Username, codUsu, h.Config.JwtSecret)
 	if err != nil {
-		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao gerar JWT", err)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao gerar JWT", err, input)
 		return
 	}
 
-	// 5. Redis (ATUALIZADO: Passando snkJSession)
+	// 5. Redis 
 	if err := h.Session.Register(jwtToken, snkJSession); err != nil {
-		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao salvar sessão", err)
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao salvar sessão", err, input)
 		return
 	}
 
