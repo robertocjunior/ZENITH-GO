@@ -3,9 +3,9 @@
 <div align="center">
   <img alt="Zenith WMS Logo" src="./docs/zenith.svg">
   <br>
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white">
-  <img alt="Docker" src="https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white">
-  <img alt="Sankhya" src="https://img.shields.io/badge/ERP-Sankhya_Integrated-52cc63">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.23+-00ADD8?style=for-the-badge&logo=go&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-Available-2496ED?style=for-the-badge&logo=docker&logoColor=white">
+  <img alt="Sankhya" src="https://img.shields.io/badge/ERP-Sankhya_Integrated-52cc63?style=for-the-badge">
 </div>
 
 ## 📋 Sobre o Projeto
