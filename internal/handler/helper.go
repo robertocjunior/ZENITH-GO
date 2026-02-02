@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 	"zenith-go/internal/notification"
 )
 
@@ -26,7 +27,6 @@ func RespondError(w http.ResponseWriter, r *http.Request, notifier *notification
 		errDetails = err.Error()
 	}
 
-	// Separa o Payload do MetaData nos argumentos opcionais
 	var meta *ErrorMeta
 	var payloadData any
 
@@ -37,21 +37,19 @@ func RespondError(w http.ResponseWriter, r *http.Request, notifier *notification
 		case *ErrorMeta:
 			meta = v
 		default:
-			// Assume que qualquer outra coisa é o payload da requisição
 			payloadData = v
 		}
 	}
 
-	// 1. LOG NO TERMINAL/ARQUIVO
+	// 1. LOG NO TERMINAL/ARQUIVO (Comportamento original)
 	if code >= 500 {
 		logArgs := []any{"error", errDetails, "path", r.URL.Path, "status", code}
 		if meta != nil {
-			// No Log do servidor mantemos informações úteis para o sysadmin
 			logArgs = append(logArgs, "user", meta.Username, "codusu", meta.CodUsu)
 		}
 		slog.Error(msg, logArgs...)
 
-		// 2. ENVIA EMAIL (APENAS ERROS 5xx)
+		// 2. ENVIA EMAIL (Com o bloco JSON para ferramentas de análise)
 		if notifier != nil {
 			contextInfo := map[string]string{
 				"Path":      r.Method + " " + r.URL.Path,
@@ -60,25 +58,36 @@ func RespondError(w http.ResponseWriter, r *http.Request, notifier *notification
 				"UserAgent": r.UserAgent(),
 			}
 
-			// Adiciona contexto do usuário se disponível
 			if meta != nil {
 				contextInfo["Usuário"] = fmt.Sprintf("%s (Cód: %d)", meta.Username, meta.CodUsu)
 				if meta.SessionID != "" {
-					// ALTERAÇÃO: Aplica a máscara no SessionID para o E-mail
 					contextInfo["SessionID"] = maskID(meta.SessionID)
 				}
 			}
 
-			// Adiciona payload sanitizado se disponível
-			if payloadData != nil {
-				sanitizedPayload := sanitizeData(payloadData)
-				contextInfo["Payload"] = sanitizedPayload
+			// GERAÇÃO DO TRECHO JSON PARA ANÁLISE
+			analysisLog := map[string]any{
+				"timestamp": time.Now().Format(time.RFC3339),
+				"level":     "ERROR",
+				"message":   msg,
+				"error":     errDetails,
+				"request": map[string]any{
+					"method": r.Method,
+					"path":   r.URL.Path,
+					"ip":     r.RemoteAddr,
+					"payload": payloadData, // O payload original
+				},
+				"context": meta,
+				"response_code": code,
 			}
+			
+			// Sanitiza o log de análise antes de enviar
+			jsonLogString := sanitizeData(analysisLog)
+			contextInfo["Analysis_JSON"] = jsonLogString
 
 			notifier.SendError(err, contextInfo)
 		}
 	} else {
-		// Erros 4xx são apenas avisos
 		slog.Warn(msg, "error", errDetails, "path", r.URL.Path, "status", code)
 	}
 
