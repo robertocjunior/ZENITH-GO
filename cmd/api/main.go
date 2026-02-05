@@ -178,6 +178,13 @@ func main() {
 		Notifier: emailService,
 	}
 
+	romaneioHandler := &handler.RomaneioHandler{
+		Client:   sankhyaClient,
+		Config:   cfg,
+		Session:  sessionManager,
+		Notifier: emailService,
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/apiv1/login", authHandler.HandleLogin)
@@ -189,6 +196,7 @@ func main() {
 	mux.HandleFunc("/apiv1/get-history", productHandler.HandleGetHistory)
 	mux.HandleFunc("/apiv1/execute-transaction", transactionHandler.HandleExecuteTransaction)
 	mux.HandleFunc("/apiv1/health", healthHandler.HandleHealthCheck)
+	mux.HandleFunc("/apiv1/romaneio", romaneioHandler.HandleGetRomaneios)
 	
 	// ROTA DE TESTE DE EMAIL
 	mux.HandleFunc("/apiv1/test-email", healthHandler.HandleTestEmail)
