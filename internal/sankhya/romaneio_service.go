@@ -68,6 +68,7 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 }
 
 func (c *Client) GetRomaneioDetalhes(ctx context.Context, nuFec int) (*RomaneioDetalheResponse, error) {
+	// SQL permanece o mesmo...
 	sql := fmt.Sprintf(`
 SELECT 
     CABECALHO.FECHAMENTO, CABECALHO.DATA, CABECALHO.MOTORISTA, CABECALHO.PESO,
@@ -115,42 +116,64 @@ CROSS JOIN (
      INNER JOIN TMSNOTASITE ITE ON NOTA.NROUNICO = ITE.NROUNICO
      INNER JOIN AD_FECCOM COM ON NOTA.NUNOTACTE = COM.NUMDOCUMENTO
      INNER JOIN AD_FECCAR FEC ON FEC.NUFECHAMENTO = COM.NUFECHAMENTO
-      LEFT JOIN TGFPRO PRO ON PRO.CODPROD = (SELECT MAX(CODPROD) FROM TGFPAP WHERE CODPROPARC = ITE.CODPROPARC AND CODPARC = NOTA.CODPARCREM)
+      LEFT JOIN TGFPAP PAP ON PAP.CODPROPARC = ITE.CODPROPARC AND NOTA.CODPARCREM = PAP.CODPARC AND ITE.CODVOL = PAP.UNIDADE AND PAP.SEQUENCIA = (SELECT MAX(SEQUENCIA) FROM TGFPAP WHERE NOTA.CODPARCREM = CODPARC AND ITE.CODVOL = UNIDADE AND CODPROPARC = ITE.CODPROPARC)
+      LEFT JOIN TGFPRO PRO ON PAP.CODPROD = PRO.CODPROD
       LEFT JOIN TGFVOA VOA ON PRO.CODPROD = VOA.CODPROD AND ITE.CODVOL = VOA.CODVOL
      WHERE COM.TIPO = 'C' AND FEC.NUFECHAMENTO = %d
      GROUP BY COM.TIPO, NVL(TO_CHAR(PRO.CODPROD),'NFe ' || TO_CHAR(NOTA.NUMNOTA)), NVL(VOA.CODVOL,ITE.CODVOL), NVL(PRO.DESCRPROD,ITE.DESCRPROD), NVL(PRO.MARCA,' '), NVL(VOA.DESCRDANFE,' '), NVL(PRO.REFERENCIA,' ')
 ) DADOS ORDER BY DADOS.TIPO DESC, DADOS.CODPROD, DADOS.CODVOL`, nuFec, nuFec, nuFec)
 
 	rows, err := c.executeQuery(ctx, sql)
-	if err != nil || len(rows) == 0 {
+	if err != nil {
 		return nil, err
 	}
+	if len(rows) == 0 {
+		// Retorna erro amigável se não achar nada, ou struct vazia
+		return nil, fmt.Errorf("nenhum registro encontrado para o fechamento %d", nuFec)
+	}
 
-	// Mapeia o cabeçalho a partir da primeira linha
+	// --- FUNÇÕES HELPER PARA EVITAR PANIC EM NIL ---
+	getFloat := func(v any) float64 {
+		if v == nil { return 0.0 }
+		if f, ok := v.(float64); ok { return f }
+		return 0.0
+	}
+	getString := func(v any) string {
+		if v == nil { return "" }
+		return fmt.Sprintf("%v", v)
+	}
+	getInt := func(v any) int {
+		if v == nil { return 0 }
+		if f, ok := v.(float64); ok { return int(f) } // JSON numbers vêm como float64
+		return 0
+	}
+	// -----------------------------------------------
+
+	// Mapeia o cabeçalho a partir da primeira linha usando Helpers
 	res := &RomaneioDetalheResponse{
-		Fechamento: int(rows[0][0].(float64)),
-		Data:       fmt.Sprintf("%v", rows[0][1]),
-		Motorista:  fmt.Sprintf("%v", rows[0][2]),
-		PesoTotal:  rows[0][3].(float64),
-		Placa:      fmt.Sprintf("%v", rows[0][4]),
-		Veiculo:    fmt.Sprintf("%v", rows[0][5]),
-		Paletes:    rows[0][6].(float64),
+		Fechamento: getInt(rows[0][0]),
+		Data:       getString(rows[0][1]),
+		Motorista:  getString(rows[0][2]),
+		PesoTotal:  getFloat(rows[0][3]), // AQUI ESTAVA O ERRO (Null Safety)
+		Placa:      getString(rows[0][4]),
+		Veiculo:    getString(rows[0][5]),
+		Paletes:    getFloat(rows[0][6]),
 		Produtos:   []RomaneioItem{},
 	}
 
 	// Mapeia os itens
 	for _, row := range rows {
 		res.Produtos = append(res.Produtos, RomaneioItem{
-			Tipo:             fmt.Sprintf("%v", row[7]),
-			CodigoProduto:    fmt.Sprintf("%v", row[8]),
-			DescricaoCompleta: fmt.Sprintf("%v", row[9]),
-			Marca:            fmt.Sprintf("%v", row[10]),
-			Unidade:          fmt.Sprintf("%v", row[11]),
-			DescricaoDanfe:   fmt.Sprintf("%v", row[12]),
-			Referencia:       fmt.Sprintf("%v", row[13]),
-			CodigoBarras4:    fmt.Sprintf("%v", row[14]),
-			Quantidade:       row[15].(float64),
-			PesoBruto:        row[16].(float64),
+			Tipo:              getString(row[7]),
+			CodigoProduto:     getString(row[8]),
+			DescricaoCompleta: getString(row[9]),
+			Marca:             getString(row[10]),
+			Unidade:           getString(row[11]),
+			DescricaoDanfe:    getString(row[12]),
+			Referencia:        getString(row[13]),
+			CodigoBarras4:     getString(row[14]),
+			Quantidade:        getFloat(row[15]),
+			PesoBruto:         getFloat(row[16]),
 		})
 	}
 
