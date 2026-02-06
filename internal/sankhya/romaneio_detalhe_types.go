@@ -5,18 +5,16 @@ type RomaneioDetalheInput struct {
 	NumeroFechamento int `json:"numero_fechamento"`
 }
 
-// RomaneioItem representa cada linha de produto do romaneio
+// RomaneioItem representa cada linha de produto do romaneio (Estrutura Simplificada)
 type RomaneioItem struct {
-	Tipo             string  `json:"tipo"`
-	CodigoProduto    string  `json:"codigo_produto"`
-	DescricaoCompleta string  `json:"descricao_completa"`
-	Marca            string  `json:"marca"`
-	Unidade          string  `json:"unidade"`
-	DescricaoDanfe   string  `json:"descricao_danfe"`
-	Referencia       string  `json:"referencia"`
-	CodigoBarras4    string  `json:"codigo_barras_4_digitos"`
-	Quantidade       float64 `json:"quantidade"`
-	PesoBruto        float64 `json:"peso_bruto"`
+	Tipo          string  `json:"tipo"`
+	CodigoProduto string  `json:"codigo_produto"`
+	Descricao     string  `json:"descricao"` // Campo unificado
+	Unidade       string  `json:"unidade"`   // CODVOL
+	Referencia    string  `json:"referencia"`
+	CodigoBarras4 string  `json:"codigo_barras_4_digitos"`
+	Quantidade    float64 `json:"quantidade"`
+	PesoBruto     float64 `json:"peso_bruto"`
 }
 
 // RomaneioDetalheResponse estrutura a resposta com cabeçalho único e lista de itens
