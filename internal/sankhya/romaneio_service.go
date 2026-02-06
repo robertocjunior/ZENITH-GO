@@ -40,6 +40,7 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 
 	var results []RomaneioResult
 	for _, row := range rows {
+		// Helpers
 		getInt := func(v any) int {
 			if f, ok := v.(float64); ok { return int(f) }
 			return 0
@@ -67,14 +68,15 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 	return results, nil
 }
 
+// GetRomaneioDetalhes busca os itens do romaneio com arredondamento corrigido
 func (c *Client) GetRomaneioDetalhes(ctx context.Context, nuFec int) (*RomaneioDetalheResponse, error) {
-	// Query Principal combinando Header (existente) + Seu Novo Select de Itens
+	// SQL Ajustado com ROUND(..., 3) nas somas para garantir precisão exata
 	sql := fmt.Sprintf(`
 SELECT 
     -- 0..6: Dados do Cabeçalho
     CABECALHO.FECHAMENTO, CABECALHO.DATA, CABECALHO.MOTORISTA, CABECALHO.PESO,
     CABECALHO.PLACA, CABECALHO.VEICULO, CABECALHO.PALETES,
-    -- 7..14: Dados do Item (Seu novo SELECT)
+    -- 7..14: Dados do Item
     ITENS.TIPO,
     ITENS.CODPROD,
     ITENS.DESCRPROD,
@@ -84,7 +86,7 @@ SELECT
     ITENS.QTDNEG,
     ITENS.PESOBRUTO
 FROM (
-    -- Subconsulta do Cabeçalho (Mantida igual)
+    -- Subconsulta do Cabeçalho
     SELECT FEC.NUFECHAMENTO AS FECHAMENTO,
            TO_CHAR(FEC.DTFECHAMENTO, 'DD/MM/YYYY') AS DATA,
            PAR.NOMEPARC AS MOTORISTA,
@@ -103,9 +105,10 @@ FROM (
      WHERE MOT.TIPO = 'M' AND NVL(FEC.STATUS, 'A') <> 'A' AND FEC.NUFECHAMENTO = %d
 ) CABECALHO
 CROSS JOIN (
-    -- SEU NOVO SELECT DE ITENS AQUI
+    -- SELECT DE ITENS (Com Arredondamento)
     SELECT DADOS.TIPO,
            DADOS.CODPROD,
+           -- Concatenação completa para bater com o exemplo JSON
            DADOS.DESCRPROD || CASE WHEN DADOS.CONTROLE = ' ' THEN '' ELSE ' - '||DADOS.CONTROLE END || ' ' || DADOS.MARCA || ' - ' || NVL(DADOS.DESCRDANFE, ' ') AS DESCRPROD,
            DADOS.CODVOL,
            DADOS.REFERENCIA,
@@ -122,12 +125,14 @@ CROSS JOIN (
                VOA.DESCRDANFE,
                PRO.REFERENCIA,
                SUBSTR(BAR.CODBARRA, -4) AS CODBARRA4DIG,
-               SUM((CASE WHEN VOA.CODPROD IS NULL THEN ITE.QTDNEG
+               -- ARREDONDAMENTO DA QUANTIDADE
+               ROUND(SUM((CASE WHEN VOA.CODPROD IS NULL THEN ITE.QTDNEG
                          WHEN VOA.DIVIDEMULTIPLICA = 'D' THEN ITE.QTDNEG * VOA.QUANTIDADE
-                         ELSE ITE.QTDNEG / VOA.QUANTIDADE END)) AS QTDNEG,
-               SUM(CASE WHEN (EXISTS(SELECT 1 FROM TGFVAR VAR WHERE VAR.NUNOTA = ITE.NUNOTA AND VAR.NUNOTAORIG = VAR.NUNOTA AND VAR.SEQUENCIAORIG = ITE.SEQUENCIA))
+                         ELSE ITE.QTDNEG / VOA.QUANTIDADE END)), 3) AS QTDNEG,
+               -- ARREDONDAMENTO DO PESO BRUTO
+               ROUND(SUM(CASE WHEN (EXISTS(SELECT 1 FROM TGFVAR VAR WHERE VAR.NUNOTA = ITE.NUNOTA AND VAR.NUNOTAORIG = VAR.NUNOTA AND VAR.SEQUENCIAORIG = ITE.SEQUENCIA))
                         THEN (SELECT SUM(ITE2.QTDNEG * PRO2.PESOBRUTO) FROM TGFITE ITE2, TGFPRO PRO2, TGFVAR VAR2 WHERE ITE2.CODPROD = PRO2.CODPROD AND ITE2.NUNOTA = CAB.NUNOTA AND ITE2.USOPROD = 'D' AND VAR2.NUNOTA = ITE.NUNOTA AND VAR2.SEQUENCIAORIG = ITE.SEQUENCIA AND VAR2.SEQUENCIA = ITE2.SEQUENCIA)
-                        ELSE ITE.QTDNEG * PRO.PESOBRUTO END) AS PESOBRUTO
+                        ELSE ITE.QTDNEG * PRO.PESOBRUTO END), 3) AS PESOBRUTO
           FROM AD_FECCAR FEC, AD_FECCOM COM, TGFCAB CAB, TGFPRO PRO, TGFITE ITE
           LEFT JOIN TGFVOA VOA ON (VOA.CODPROD = ITE.CODPROD AND VOA.CODVOL = ITE.CODVOL AND ((ITE.CONTROLE IS NULL AND VOA.CONTROLE = ' ') OR (ITE.CONTROLE IS NOT NULL AND ITE.CONTROLE = VOA.CONTROLE)))
           LEFT JOIN TGFVOA BAR ON (BAR.CODPROD = ITE.CODPROD AND BAR.UNIDTRIB = 'S' AND ((ITE.CONTROLE IS NULL AND BAR.CONTROLE = ' ') OR (ITE.CONTROLE IS NOT NULL AND ITE.CONTROLE = BAR.CONTROLE)))
@@ -153,8 +158,10 @@ CROSS JOIN (
                NVL(VOA.DESCRDANFE,' ') AS DESCRDANFE,
                NVL(PRO.REFERENCIA,' ') AS REFERENCIA,
                ' ' AS CODBARRA4DIG,
-               SUM(ITE.QTDNEG) AS QTDNEG,
-               SUM((NOTA.PESOTOT / NOTA.QTDVOL) * ITE.QTDNEG) AS PESOBRUTO
+               -- ARREDONDAMENTO DA QUANTIDADE
+               ROUND(SUM(ITE.QTDNEG), 3) AS QTDNEG,
+               -- ARREDONDAMENTO DO PESO BRUTO
+               ROUND(SUM((NOTA.PESOTOT / NOTA.QTDVOL) * ITE.QTDNEG), 3) AS PESOBRUTO
           FROM TMSNOTAS NOTA
          INNER JOIN TMSNOTASITE ITE ON NOTA.NROUNICO = ITE.NROUNICO
          INNER JOIN AD_FECCOM COM ON NOTA.NUNOTACTE = COM.NUMDOCUMENTO
@@ -177,7 +184,7 @@ CROSS JOIN (
 		return nil, fmt.Errorf("nenhum registro encontrado para o fechamento %d", nuFec)
 	}
 
-	// Helpers para evitar PANIC com valores NULL
+	// Helpers (Null Safety)
 	getFloat := func(v any) float64 {
 		if v == nil { return 0.0 }
 		if f, ok := v.(float64); ok { return f }
@@ -210,8 +217,8 @@ CROSS JOIN (
 		res.Produtos = append(res.Produtos, RomaneioItem{
 			Tipo:          getString(row[7]),
 			CodigoProduto: getString(row[8]),
-			Descricao:     getString(row[9]),  // Novo campo concatenado
-			Unidade:       getString(row[10]), // CODVOL
+			Descricao:     getString(row[9]),
+			Unidade:       getString(row[10]),
 			Referencia:    getString(row[11]),
 			CodigoBarras4: getString(row[12]),
 			Quantidade:    getFloat(row[13]),
