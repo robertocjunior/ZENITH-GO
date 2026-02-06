@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// GetRomaneios executa a consulta de fechamentos de carga por data
+// GetRomaneios executa a consulta de fechamentos de carga com peso total
 func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]RomaneioResult, error) {
 	safeData := sanitizeStringForSql(dataFiltro)
 
@@ -13,20 +13,23 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 		SELECT FEC.NUFECHAMENTO AS FECHAMENTO,
 		       TO_CHAR(FEC.DTFECHAMENTO, 'DD/MM/YYYY') AS DATA,
 		       PAR.NOMEPARC AS MOTORISTA,
+		       COM.PESO_TOTAL AS PESO,
 		       VEI.PLACA AS PLACA,
 		       VEI.AD_NUMINT || '-' || VEI.MARCAMODELO AS VEICULO,
 		       VEI.AD_QTDPALLET AS PALETES
-		  FROM AD_FECCAR FEC,
-		       AD_FECMOT MOT,
-		       TGFPAR PAR,
-		       TGFROT ROT,
-		       TGFVEI VEI
-		 WHERE FEC.NUFECHAMENTO = MOT.NUFECHAMENTO
-		   AND MOT.CODPARC = PAR.CODPARC
-		   AND ROT.CODROTA = FEC.CODROTA
-		   AND VEI.CODVEICULO = FEC.CODVEICULO
-		   AND MOT.TIPO= 'M'
-		   AND NVL(FEC.STATUS,'A') <> 'A'
+		  FROM AD_FECCAR FEC
+		  JOIN AD_FECMOT MOT ON FEC.NUFECHAMENTO = MOT.NUFECHAMENTO
+		  JOIN TGFPAR PAR ON MOT.CODPARC = PAR.CODPARC
+		  JOIN TGFROT ROT ON FEC.CODROTA = ROT.CODROTA
+		  JOIN TGFVEI VEI ON FEC.CODVEICULO = VEI.CODVEICULO
+		  LEFT JOIN (
+		        SELECT NUFECHAMENTO, 
+		               ROUND(SUM(PESOBRUTO), 3) AS PESO_TOTAL
+		          FROM AD_FECCOM
+		         GROUP BY NUFECHAMENTO
+		  ) COM ON FEC.NUFECHAMENTO = COM.NUFECHAMENTO
+		 WHERE MOT.TIPO = 'M'
+		   AND NVL(FEC.STATUS, 'A') <> 'A'
 		   AND TRUNC(FEC.DTFECHAMENTO) = TO_DATE('%s', 'DD/MM/YYYY')
 		 ORDER BY FEC.NUFECHAMENTO DESC`, safeData)
 
@@ -54,9 +57,10 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 			Fechamento: getInt(row[0]),
 			Data:       getString(row[1]),
 			Motorista:  getString(row[2]),
-			Placa:      getString(row[3]),
-			Veiculo:    getString(row[4]),
-			Paletes:    getFloat(row[5]),
+			Peso:       getFloat(row[3]),
+			Placa:      getString(row[4]),
+			Veiculo:    getString(row[5]),
+			Paletes:    getFloat(row[6]),
 		})
 	}
 
