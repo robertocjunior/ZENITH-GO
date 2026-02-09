@@ -81,8 +81,9 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 func (c *Client) GetRomaneioDetalhes(ctx context.Context, nuFec int) (*RomaneioDetalheResponse, error) {
 	sql := fmt.Sprintf(`
 SELECT 
-    -- 0..9: Dados do Cabeçalho
+    -- 0..10: Dados do Cabeçalho
     CABECALHO.FECHAMENTO, 
+    CABECALHO.NUUNICO, -- Novo campo (Índice 1)
     CABECALHO.DATA, 
     CABECALHO.MOTORISTA, 
     CABECALHO.PESO,
@@ -92,7 +93,7 @@ SELECT
     CABECALHO.CODUSU,
     CABECALHO.NOMEUSU,
     CABECALHO.STATUS_CONF,
-    -- 10..18: Dados do Item
+    -- 11..19: Dados do Item
     ITENS.TIPO,
     ITENS.CODPROD,
     ITENS.DESCRPROD,
@@ -105,6 +106,7 @@ SELECT
 FROM (
     -- Subconsulta do Cabeçalho
     SELECT FEC.NUFECHAMENTO AS FECHAMENTO,
+           FCAB.NUUNICO, -- Selecionado da tabela AD_ZNTCONFCAB
            TO_CHAR(FEC.DTFECHAMENTO, 'DD/MM/YYYY') AS DATA,
            PAR.NOMEPARC AS MOTORISTA,
            COM_PESO.PESO_TOTAL AS PESO,
@@ -113,7 +115,7 @@ FROM (
            VEI.AD_QTDPALLET AS PALETES,
            FCAB.CODUSU,
            USU.NOMEUSUCPLT AS NOMEUSU,
-           FCAB.STATUS AS STATUS_CONF -- Alterado para FCAB.STATUS conforme solicitado
+           FCAB.STATUS AS STATUS_CONF
       FROM AD_FECCAR FEC
       JOIN AD_FECMOT MOT ON FEC.NUFECHAMENTO = MOT.NUFECHAMENTO
       JOIN TGFPAR PAR ON MOT.CODPARC = PAR.CODPARC
@@ -226,33 +228,34 @@ ORDER BY ITENS.TIPO DESC, ITENS.CODPROD, ITENS.CODVOL`, nuFec, nuFec, nuFec)
 		return 0
 	}
 
-	// Mapeia o cabeçalho (0-9)
+	// Mapeia o cabeçalho (0-10) - Indices atualizados
 	res := &RomaneioDetalheResponse{
 		Fechamento:        getInt(rows[0][0]),
-		Data:              getString(rows[0][1]),
-		Motorista:         getString(rows[0][2]),
-		PesoTotal:         getFloat(rows[0][3]),
-		Placa:             getString(rows[0][4]),
-		Veiculo:           getString(rows[0][5]),
-		Paletes:           getFloat(rows[0][6]),
-		CodUsuario:        getInt(rows[0][7]),
-		NomeUsuario:       getString(rows[0][8]),
-		StatusConferencia: getString(rows[0][9]), // Agora busca FCAB.STATUS
+		NuUnico:           getInt(rows[0][1]), // Novo Campo
+		Data:              getString(rows[0][2]),
+		Motorista:         getString(rows[0][3]),
+		PesoTotal:         getFloat(rows[0][4]),
+		Placa:             getString(rows[0][5]),
+		Veiculo:           getString(rows[0][6]),
+		Paletes:           getFloat(rows[0][7]),
+		CodUsuario:        getInt(rows[0][8]),
+		NomeUsuario:       getString(rows[0][9]),
+		StatusConferencia: getString(rows[0][10]),
 		Produtos:          []RomaneioItem{},
 	}
 
-	// Mapeia os itens (10-18)
+	// Mapeia os itens (11-19) - Indices atualizados
 	for _, row := range rows {
 		res.Produtos = append(res.Produtos, RomaneioItem{
-			Tipo:          getString(row[10]),
-			CodigoProduto: getString(row[11]),
-			Descricao:     getString(row[12]),
-			Unidade:       getString(row[13]),
-			Referencia:    getString(row[14]),
-			CodigoBarras4: getString(row[15]),
-			Quantidade:    getFloat(row[16]),
-			PesoBruto:     getFloat(row[17]),
-			Conferido:     getString(row[18]), // Novo campo
+			Tipo:          getString(row[11]),
+			CodigoProduto: getString(row[12]),
+			Descricao:     getString(row[13]),
+			Unidade:       getString(row[14]),
+			Referencia:    getString(row[15]),
+			CodigoBarras4: getString(row[16]),
+			Quantidade:    getFloat(row[17]),
+			PesoBruto:     getFloat(row[18]),
+			Conferido:     getString(row[19]),
 		})
 	}
 

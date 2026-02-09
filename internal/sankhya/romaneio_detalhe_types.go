@@ -15,12 +15,13 @@ type RomaneioItem struct {
 	CodigoBarras4 string  `json:"codigo_barras_4_digitos"`
 	Quantidade    float64 `json:"quantidade"`
 	PesoBruto     float64 `json:"peso_bruto"`
-	Conferido     string  `json:"conferido"` // 'S' ou 'N'
+	Conferido     string  `json:"conferido"`
 }
 
 // RomaneioDetalheResponse estrutura a resposta com cabeçalho único e lista de itens
 type RomaneioDetalheResponse struct {
 	Fechamento        int            `json:"fechamento"`
+	NuUnico           int            `json:"nu_unico"`    // Novo Campo
 	Data              string         `json:"data"`
 	Motorista         string         `json:"motorista"`
 	PesoTotal         float64        `json:"peso"`
@@ -29,6 +30,6 @@ type RomaneioDetalheResponse struct {
 	Paletes           float64        `json:"paletes"`
 	CodUsuario        int            `json:"cod_usuario"`
 	NomeUsuario       string         `json:"nome_usuario"`
-	StatusConferencia string         `json:"status_conf"` // Alterado para bater com o CSV/SQL
+	StatusConferencia string         `json:"status_conf"`
 	Produtos          []RomaneioItem `json:"produtos"`
 }
