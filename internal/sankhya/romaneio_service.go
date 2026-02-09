@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// GetRomaneios executa a consulta de fechamentos de carga com peso total
+// GetRomaneios executa a consulta de fechamentos de carga com peso total e status de conferência
 func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]RomaneioResult, error) {
 	safeData := sanitizeStringForSql(dataFiltro)
 
@@ -16,12 +16,17 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 		       COM.PESO_TOTAL AS PESO,
 		       VEI.PLACA AS PLACA,
 		       VEI.AD_NUMINT || '-' || VEI.MARCAMODELO AS VEICULO,
-		       VEI.AD_QTDPALLET AS PALETES
+		       VEI.AD_QTDPALLET AS PALETES,
+		       FCAB.CODUSU,
+		       USU.NOMEUSUCPLT AS NOMEUSU,
+		       FCAB.STATUS
 		  FROM AD_FECCAR FEC
 		  JOIN AD_FECMOT MOT ON FEC.NUFECHAMENTO = MOT.NUFECHAMENTO
 		  JOIN TGFPAR PAR ON MOT.CODPARC = PAR.CODPARC
 		  JOIN TGFROT ROT ON FEC.CODROTA = ROT.CODROTA
 		  JOIN TGFVEI VEI ON FEC.CODVEICULO = VEI.CODVEICULO
+		  JOIN AD_ZNTCONFCAB FCAB ON FCAB.NUFECHAMENTO = FEC.NUFECHAMENTO
+		  LEFT JOIN TSIUSU USU ON USU.CODUSU = FCAB.CODUSU
 		  LEFT JOIN (
 		        SELECT NUFECHAMENTO, 
 		               ROUND(SUM(PESOBRUTO), 3) AS PESO_TOTAL
@@ -31,6 +36,7 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 		 WHERE MOT.TIPO = 'M'
 		   AND NVL(FEC.STATUS, 'A') <> 'A'
 		   AND TRUNC(FEC.DTFECHAMENTO) = TO_DATE('%s', 'DD/MM/YYYY')
+		   AND FCAB.CONFERIDO <> 'S'
 		 ORDER BY FEC.NUFECHAMENTO DESC`, safeData)
 
 	rows, err := c.executeQuery(ctx, sql)
@@ -40,7 +46,7 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 
 	var results []RomaneioResult
 	for _, row := range rows {
-		// Helpers
+		// Helpers para evitar Panic com Nulls
 		getInt := func(v any) int {
 			if f, ok := v.(float64); ok { return int(f) }
 			return 0
@@ -55,13 +61,16 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 		}
 
 		results = append(results, RomaneioResult{
-			Fechamento: getInt(row[0]),
-			Data:       getString(row[1]),
-			Motorista:  getString(row[2]),
-			Peso:       getFloat(row[3]),
-			Placa:      getString(row[4]),
-			Veiculo:    getString(row[5]),
-			Paletes:    getFloat(row[6]),
+			Fechamento:  getInt(row[0]),
+			Data:        getString(row[1]),
+			Motorista:   getString(row[2]),
+			Peso:        getFloat(row[3]),
+			Placa:       getString(row[4]),
+			Veiculo:     getString(row[5]),
+			Paletes:     getFloat(row[6]),
+			CodUsuario:  getInt(row[7]),    // Mapeando CODUSU
+			NomeUsuario: getString(row[8]), // Mapeando NOMEUSU
+			Status:      getString(row[9]), // Mapeando STATUS
 		})
 	}
 
