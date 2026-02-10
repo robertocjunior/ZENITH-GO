@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+	"strings"
 	"zenith-go/internal/auth"
 	"zenith-go/internal/config"
 	"zenith-go/internal/notification"
@@ -68,25 +69,46 @@ func (h *RomaneioHandler) HandleGetRomaneios(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(data)
 }
 
+func getTokenFromHeaderRomaneio(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		return strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	return ""
+}
+
+func getHeaderRomaneio(r *http.Request, key string) string {
+	return r.Header.Get(key)
+}
+
 func (h *RomaneioHandler) HandleIniciarConferencia(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Validação de Segurança
-	token := getTokenFromHeader(r)
-	if token == "" {
-		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token ausente", nil)
+	// 1. Extração dos Tokens (Igual ao TransactionHandler)
+	bearerToken := getTokenFromHeaderRomaneio(r)
+	snkSessionId := getHeaderRomaneio(r, "Snkjsessionid")
+
+	if bearerToken == "" || snkSessionId == "" {
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Tokens ausentes (Authorization ou Snkjsessionid)", nil)
 		return
 	}
 
-	if _, _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+	// 2. Validação do JWT
+	if _, _, err := auth.ValidateToken(bearerToken, h.Config.JwtSecret); err != nil {
 		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
 		return
 	}
 
-	// Parsing do Body
+	// 3. Validação da Sessão (Sliding Expiration)
+	if err := h.Session.ValidateAndUpdate(bearerToken); err != nil {
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Sessão expirada", err)
+		return
+	}
+
+	// 4. Parsing do Body
 	var input sankhya.IniciarConferenciaInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
@@ -98,9 +120,9 @@ func (h *RomaneioHandler) HandleIniciarConferencia(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Execução
+	// 5. Execução (Passando o snkSessionId)
 	ctx := r.Context()
-	resp, err := h.Client.IniciarConferencia(ctx, input.NuUnico)
+	resp, err := h.Client.IniciarConferencia(ctx, input.NuUnico, snkSessionId)
 	if err != nil {
 		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao iniciar conferência", err)
 		return

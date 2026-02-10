@@ -263,11 +263,13 @@ ORDER BY ITENS.TIPO DESC, ITENS.CODPROD, ITENS.CODVOL`, nuFec, nuFec, nuFec)
 	return res, nil
 }
 
-func (c *Client) IniciarConferencia(ctx context.Context, nuUnico int) (*TransactionResponse, error) {
-	// Formata a data atual: DD/MM/YYYY HH:mm:00 (Segundos zerados conforme solicitado)
+func (c *Client) IniciarConferencia(ctx context.Context, nuUnico int, snkSessionId string) (*TransactionResponse, error) {
+	// Formata a data atual: DD/MM/YYYY HH:mm:00
 	dataAtual := time.Now().Format("02/01/2006 15:04:00")
 
-	// Montagem do Payload específico da ActionButton
+	// Montagem do Payload para o ActionButtonsSP.executeSTP
+	// Nota: ExecuteServiceWithCookie já encapsula isso dentro de um "requestBody",
+	// então montamos apenas o conteúdo interno.
 	requestBody := map[string]any{
 		"stpCall": map[string]any{
 			"actionID":    "172",
@@ -305,6 +307,6 @@ func (c *Client) IniciarConferencia(ctx context.Context, nuUnico int) (*Transact
 		},
 	}
 
-	// Reutiliza o método genérico de execução de serviços do sistema
-	return c.ExecuteServiceAsSystem(ctx, "ActionButtonsSP.executeSTP", requestBody)
+	// Executa usando o Cookie de sessão do usuário (igual ao execute-transaction)
+	return c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", requestBody, snkSessionId)
 }
