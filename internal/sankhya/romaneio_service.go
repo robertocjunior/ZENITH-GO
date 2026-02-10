@@ -84,7 +84,7 @@ func (c *Client) GetRomaneioDetalhes(ctx context.Context, nuFec int) (*RomaneioD
 SELECT 
     -- 0..10: Dados do Cabeçalho
     CABECALHO.FECHAMENTO, 
-    CABECALHO.NUUNICO, -- Novo campo (Índice 1)
+    CABECALHO.NUUNICO, 
     CABECALHO.DATA, 
     CABECALHO.MOTORISTA, 
     CABECALHO.PESO,
@@ -103,11 +103,12 @@ SELECT
     ITENS.CODBARRA4DIG,
     ITENS.QTDNEG,
     ITENS.PESOBRUTO,
-    NVL(CONF.CONFERIDO, 'N') AS CONFERIDO
+    NVL(CONF.CONFERIDO, 'N') AS CONFERIDO,
+    CONF.NUMREG -- 20: Novo Campo
 FROM (
     -- Subconsulta do Cabeçalho
     SELECT FEC.NUFECHAMENTO AS FECHAMENTO,
-           FCAB.NUUNICO, -- Selecionado da tabela AD_ZNTCONFCAB
+           FCAB.NUUNICO,
            TO_CHAR(FEC.DTFECHAMENTO, 'DD/MM/YYYY') AS DATA,
            PAR.NOMEPARC AS MOTORISTA,
            COM_PESO.PESO_TOTAL AS PESO,
@@ -229,10 +230,10 @@ ORDER BY ITENS.TIPO DESC, ITENS.CODPROD, ITENS.CODVOL`, nuFec, nuFec, nuFec)
 		return 0
 	}
 
-	// Mapeia o cabeçalho (0-10) - Indices atualizados
+	// Mapeia o cabeçalho (0-10)
 	res := &RomaneioDetalheResponse{
 		Fechamento:        getInt(rows[0][0]),
-		NuUnico:           getInt(rows[0][1]), // Novo Campo
+		NuUnico:           getInt(rows[0][1]),
 		Data:              getString(rows[0][2]),
 		Motorista:         getString(rows[0][3]),
 		PesoTotal:         getFloat(rows[0][4]),
@@ -245,7 +246,7 @@ ORDER BY ITENS.TIPO DESC, ITENS.CODPROD, ITENS.CODVOL`, nuFec, nuFec, nuFec)
 		Produtos:          []RomaneioItem{},
 	}
 
-	// Mapeia os itens (11-19) - Indices atualizados
+	// Mapeia os itens (11-20)
 	for _, row := range rows {
 		res.Produtos = append(res.Produtos, RomaneioItem{
 			Tipo:          getString(row[11]),
@@ -257,6 +258,7 @@ ORDER BY ITENS.TIPO DESC, ITENS.CODPROD, ITENS.CODVOL`, nuFec, nuFec, nuFec)
 			Quantidade:    getFloat(row[17]),
 			PesoBruto:     getFloat(row[18]),
 			Conferido:     getString(row[19]),
+			NumReg:        getInt(row[20]), // Mapeia o novo campo NUMREG
 		})
 	}
 
