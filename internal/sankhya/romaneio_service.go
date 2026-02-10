@@ -312,3 +312,65 @@ func (c *Client) IniciarConferencia(ctx context.Context, nuUnico int, snkSession
 	// Executa usando o Cookie de sessão do usuário (igual ao execute-transaction)
 	return c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", requestBody, snkSessionId)
 }
+
+func (c *Client) ConferirItem(ctx context.Context, nuUnico int, numReg int, snkSessionId string) (*TransactionResponse, error) {
+	// Formata a data atual: DD/MM/YYYY HH:mm:00 (Segundos zerados)
+	dataAtual := time.Now().Format("02/01/2006 15:04:00")
+
+	// Montagem do Payload para ActionButtonsSP.executeSTP
+	requestBody := map[string]any{
+		"stpCall": map[string]any{
+			"actionID":    "171",
+			"procName":    "STP_CONFERIR_ITEM_ZNT",
+			"rootEntity":  "AD_ZNTITEMCONF",
+			"refreshType": "SEL",
+			"params": map[string]any{
+				"param": []map[string]any{
+					{
+						"type":      "D",
+						"paramName": "DTHCONF",
+						"$":         dataAtual,
+					},
+				},
+			},
+			"rows": map[string]any{
+				"row": []map[string]any{
+					// Linha 1: Mestre (AD_ZNTCONFCAB)
+					{
+						"master":     "S",
+						"entityName": "AD_ZNTCONFCAB",
+						"field": []map[string]any{
+							{
+								"fieldName": "NUUNICO",
+								"$":         fmt.Sprintf("%d", nuUnico),
+							},
+						},
+					},
+					// Linha 2: Item (AD_ZNTITEMCONF)
+					{
+						"field": []map[string]any{
+							{
+								"fieldName": "NUUNICO",
+								"$":         fmt.Sprintf("%d", nuUnico),
+							},
+							{
+								"fieldName": "NUMREG",
+								"$":         fmt.Sprintf("%d", numReg),
+							},
+						},
+					},
+				},
+			},
+		},
+		"clientEventList": map[string]any{
+			"clientEvent": []map[string]any{
+				{
+					"$": "br.com.sankhya.actionbutton.clientconfirm",
+				},
+			},
+		},
+	}
+
+	// Executa usando o Cookie de sessão do usuário
+	return c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", requestBody, snkSessionId)
+}

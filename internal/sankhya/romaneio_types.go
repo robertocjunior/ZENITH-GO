@@ -22,3 +22,8 @@ type RomaneioResult struct {
 type IniciarConferenciaInput struct {
 	NuUnico int `json:"nu_unico"`
 }
+
+type ConferirItemInput struct {
+	NuUnico int `json:"nu_unico"`
+	NumReg  int `json:"num_reg"`
+}
