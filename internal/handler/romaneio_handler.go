@@ -67,3 +67,45 @@ func (h *RomaneioHandler) HandleGetRomaneios(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
 }
+
+func (h *RomaneioHandler) HandleIniciarConferencia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Validação de Segurança
+	token := getTokenFromHeader(r)
+	if token == "" {
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token ausente", nil)
+		return
+	}
+
+	if _, _, err := auth.ValidateToken(token, h.Config.JwtSecret); err != nil {
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
+		return
+	}
+
+	// Parsing do Body
+	var input sankhya.IniciarConferenciaInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
+		return
+	}
+
+	if input.NuUnico == 0 {
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "O campo 'nu_unico' é obrigatório", nil)
+		return
+	}
+
+	// Execução
+	ctx := r.Context()
+	resp, err := h.Client.IniciarConferencia(ctx, input.NuUnico)
+	if err != nil {
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao iniciar conferência", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}

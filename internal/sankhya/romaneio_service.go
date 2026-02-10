@@ -3,6 +3,7 @@ package sankhya
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // GetRomaneios executa a consulta de fechamentos de carga com peso total e status de conferência
@@ -260,4 +261,50 @@ ORDER BY ITENS.TIPO DESC, ITENS.CODPROD, ITENS.CODVOL`, nuFec, nuFec, nuFec)
 	}
 
 	return res, nil
+}
+
+func (c *Client) IniciarConferencia(ctx context.Context, nuUnico int) (*TransactionResponse, error) {
+	// Formata a data atual: DD/MM/YYYY HH:mm:00 (Segundos zerados conforme solicitado)
+	dataAtual := time.Now().Format("02/01/2006 15:04:00")
+
+	// Montagem do Payload específico da ActionButton
+	requestBody := map[string]any{
+		"stpCall": map[string]any{
+			"actionID":    "172",
+			"procName":    "STP_INICIAR_CONF_ZNT",
+			"rootEntity":  "AD_ZNTCONFCAB",
+			"refreshType": "SEL",
+			"params": map[string]any{
+				"param": []map[string]any{
+					{
+						"type":      "D",
+						"paramName": "DTINICONF",
+						"$":         dataAtual,
+					},
+				},
+			},
+			"rows": map[string]any{
+				"row": []map[string]any{
+					{
+						"field": []map[string]any{
+							{
+								"fieldName": "NUUNICO",
+								"$":         fmt.Sprintf("%d", nuUnico),
+							},
+						},
+					},
+				},
+			},
+		},
+		"clientEventList": map[string]any{
+			"clientEvent": []map[string]any{
+				{
+					"$": "br.com.sankhya.actionbutton.clientconfirm",
+				},
+			},
+		},
+	}
+
+	// Reutiliza o método genérico de execução de serviços do sistema
+	return c.ExecuteServiceAsSystem(ctx, "ActionButtonsSP.executeSTP", requestBody)
 }

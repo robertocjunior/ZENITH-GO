@@ -198,6 +198,7 @@ func main() {
 	mux.HandleFunc("/apiv1/health", healthHandler.HandleHealthCheck)
 	mux.HandleFunc("/apiv1/romaneio", romaneioHandler.HandleGetRomaneios)
 	mux.HandleFunc("/apiv1/romaneio-detalhe", romaneioHandler.HandleGetRomaneioDetalhes)
+	mux.HandleFunc("/apiv1/iniciar-conferencia", romaneioHandler.HandleIniciarConferencia)
 	
 	// ROTA DE TESTE DE EMAIL
 	mux.HandleFunc("/apiv1/test-email", healthHandler.HandleTestEmail)

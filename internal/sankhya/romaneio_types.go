@@ -18,3 +18,7 @@ type RomaneioResult struct {
 	NomeUsuario string  `json:"nome_usuario"`
 	Status      string  `json:"status"`
 }
+
+type IniciarConferenciaInput struct {
+	NuUnico int `json:"nu_unico"`
+}
