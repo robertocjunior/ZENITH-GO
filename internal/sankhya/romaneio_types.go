@@ -24,6 +24,8 @@ type IniciarConferenciaInput struct {
 }
 
 type ConferirItemInput struct {
-	NuUnico int `json:"nu_unico"`
-	NumReg  int `json:"num_reg"`
+	NuUnico      int     `json:"nu_unico"`
+	NumReg       int     `json:"num_reg"`
+	QtdEmbarcada float64 `json:"qtd_embarcada"`
+	Obs          string  `json:"obs"`
 }

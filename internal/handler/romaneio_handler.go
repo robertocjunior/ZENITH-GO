@@ -164,15 +164,21 @@ func (h *RomaneioHandler) HandleConferirItem(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Validação de campos obrigatórios
+	// 3. Validação de campos obrigatórios
+	// NUUNICO, NUMREG e QTDEMBARCADA são obrigatórios
 	if input.NuUnico == 0 || input.NumReg == 0 {
 		RespondError(w, r, h.Notifier, http.StatusBadRequest, "Os campos 'nu_unico' e 'num_reg' são obrigatórios", nil)
 		return
 	}
 
-	// 3. Execução
+	if input.QtdEmbarcada <= 0 {
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "O campo 'qtd_embarcada' deve ser maior que zero", nil)
+		return
+	}
+
+	// 4. Execução (Passando o input completo)
 	ctx := r.Context()
-	resp, err := h.Client.ConferirItem(ctx, input.NuUnico, input.NumReg, snkSessionId)
+	resp, err := h.Client.ConferirItem(ctx, input, snkSessionId)
 	if err != nil {
 		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao conferir item", err)
 		return

@@ -319,11 +319,34 @@ func (c *Client) IniciarConferencia(ctx context.Context, nuUnico int, snkSession
 	return c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", requestBody, snkSessionId)
 }
 
-func (c *Client) ConferirItem(ctx context.Context, nuUnico int, numReg int, snkSessionId string) (*TransactionResponse, error) {
-	// Formata a data atual: DD/MM/YYYY HH:mm:00 (Segundos zerados)
+func (c *Client) ConferirItem(ctx context.Context, input ConferirItemInput, snkSessionId string) (*TransactionResponse, error) {
+	// Formata a data atual: DD/MM/YYYY HH:mm:00
 	dataAtual := time.Now().Format("02/01/2006 15:04:00")
 
-	// Montagem do Payload para ActionButtonsSP.executeSTP
+	// Montagem dos parâmetros dinâmicos
+	params := []map[string]any{
+		{
+			"type":      "D",
+			"paramName": "DTHCONF",
+			"$":         dataAtual,
+		},
+		{
+			"type":      "F", // "F" para Numérico (aceita int e float)
+			"paramName": "QTDEMBARCADA",
+			"$":         input.QtdEmbarcada,
+		},
+	}
+
+	// Adiciona OBS apenas se foi preenchida (Opcional)
+	if input.Obs != "" {
+		params = append(params, map[string]any{
+			"type":      "S",
+			"paramName": "OBS",
+			"$":         input.Obs,
+		})
+	}
+
+	// Payload completo
 	requestBody := map[string]any{
 		"stpCall": map[string]any{
 			"actionID":    "171",
@@ -331,37 +354,31 @@ func (c *Client) ConferirItem(ctx context.Context, nuUnico int, numReg int, snkS
 			"rootEntity":  "AD_ZNTITEMCONF",
 			"refreshType": "SEL",
 			"params": map[string]any{
-				"param": []map[string]any{
-					{
-						"type":      "D",
-						"paramName": "DTHCONF",
-						"$":         dataAtual,
-					},
-				},
+				"param": params,
 			},
 			"rows": map[string]any{
 				"row": []map[string]any{
-					// Linha 1: Mestre (AD_ZNTCONFCAB)
+					// Mestre
 					{
 						"master":     "S",
 						"entityName": "AD_ZNTCONFCAB",
 						"field": []map[string]any{
 							{
 								"fieldName": "NUUNICO",
-								"$":         fmt.Sprintf("%d", nuUnico),
+								"$":         fmt.Sprintf("%d", input.NuUnico),
 							},
 						},
 					},
-					// Linha 2: Item (AD_ZNTITEMCONF)
+					// Detalhe
 					{
 						"field": []map[string]any{
 							{
 								"fieldName": "NUUNICO",
-								"$":         fmt.Sprintf("%d", nuUnico),
+								"$":         fmt.Sprintf("%d", input.NuUnico),
 							},
 							{
 								"fieldName": "NUMREG",
-								"$":         fmt.Sprintf("%d", numReg),
+								"$":         fmt.Sprintf("%d", input.NumReg),
 							},
 						},
 					},
@@ -377,6 +394,5 @@ func (c *Client) ConferirItem(ctx context.Context, nuUnico int, numReg int, snkS
 		},
 	}
 
-	// Executa usando o Cookie de sessão do usuário
 	return c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", requestBody, snkSessionId)
 }
