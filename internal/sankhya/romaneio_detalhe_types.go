@@ -17,6 +17,7 @@ type RomaneioItem struct {
 	PesoBruto     float64 `json:"peso_bruto"`
 	Conferido     string  `json:"conferido"`
 	NumReg        int     `json:"num_reg"`
+	ListaBarras   string  `json:"lista_barras"`
 }
 
 // RomaneioDetalheResponse estrutura a resposta com cabeçalho único e lista de itens

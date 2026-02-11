@@ -104,7 +104,12 @@ SELECT
     ITENS.QTDNEG,
     ITENS.PESOBRUTO,
     NVL(CONF.CONFERIDO, 'N') AS CONFERIDO,
-    CONF.NUMREG -- 20: Novo Campo
+    CONF.NUMREG,
+    -- 21: Novo campo: Lista de Códigos de Barras
+    (SELECT LISTAGG(CODBARRA, ', ') WITHIN GROUP (ORDER BY CODBARRA)
+       FROM TGFVOA 
+      WHERE CODPROD = TO_NUMBER(REGEXP_REPLACE(ITENS.CODPROD, '[^0-9]', ''))
+        AND CODBARRA IS NOT NULL) AS LISTA_BARRAS
 FROM (
     -- Subconsulta do Cabeçalho
     SELECT FEC.NUFECHAMENTO AS FECHAMENTO,
@@ -246,7 +251,7 @@ ORDER BY ITENS.TIPO DESC, ITENS.CODPROD, ITENS.CODVOL`, nuFec, nuFec, nuFec)
 		Produtos:          []RomaneioItem{},
 	}
 
-	// Mapeia os itens (11-20)
+	// Mapeia os itens (11-21)
 	for _, row := range rows {
 		res.Produtos = append(res.Produtos, RomaneioItem{
 			Tipo:          getString(row[11]),
@@ -258,7 +263,8 @@ ORDER BY ITENS.TIPO DESC, ITENS.CODPROD, ITENS.CODVOL`, nuFec, nuFec, nuFec)
 			Quantidade:    getFloat(row[17]),
 			PesoBruto:     getFloat(row[18]),
 			Conferido:     getString(row[19]),
-			NumReg:        getInt(row[20]), // Mapeia o novo campo NUMREG
+			NumReg:        getInt(row[20]),
+			ListaBarras:   getString(row[21]), // Novo Mapeamento
 		})
 	}
 
