@@ -396,3 +396,60 @@ func (c *Client) ConferirItem(ctx context.Context, input ConferirItemInput, snkS
 
 	return c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", requestBody, snkSessionId)
 }
+
+func (c *Client) FinalizarConferencia(ctx context.Context, input FinalizarConferenciaInput, snkSessionId string) (*TransactionResponse, error) {
+	// Formata a data atual: DD/MM/YYYY HH:mm:00
+	dataAtual := time.Now().Format("02/01/2006 15:04:00")
+
+	// Montagem dos parâmetros dinâmicos
+	params := []map[string]any{
+		{
+			"type":      "D",
+			"paramName": "DTFIMCONF",
+			"$":         dataAtual,
+		},
+	}
+
+	// Adiciona OBSFIM apenas se foi preenchida (Opcional)
+	if input.ObsFim != "" {
+		params = append(params, map[string]any{
+			"type":      "S",
+			"paramName": "OBSFIM",
+			"$":         input.ObsFim,
+		})
+	}
+
+	// Payload completo
+	requestBody := map[string]any{
+		"stpCall": map[string]any{
+			"actionID":    "173",
+			"procName":    "STP_FINALIZAR_CONF_ZNT",
+			"rootEntity":  "AD_ZNTCONFCAB",
+			"refreshType": "SEL",
+			"params": map[string]any{
+				"param": params,
+			},
+			"rows": map[string]any{
+				"row": []map[string]any{
+					{
+						"field": []map[string]any{
+							{
+								"fieldName": "NUUNICO",
+								"$":         fmt.Sprintf("%d", input.NuUnico),
+							},
+						},
+					},
+				},
+			},
+		},
+		"clientEventList": map[string]any{
+			"clientEvent": []map[string]any{
+				{
+					"$": "br.com.sankhya.actionbutton.clientconfirm",
+				},
+			},
+		},
+	}
+
+	return c.ExecuteServiceWithCookie(ctx, "ActionButtonsSP.executeSTP", requestBody, snkSessionId)
+}

@@ -29,3 +29,8 @@ type ConferirItemInput struct {
 	QtdEmbarcada float64 `json:"qtd_embarcada"`
 	Obs          string  `json:"obs"`
 }
+
+type FinalizarConferenciaInput struct {
+	NuUnico int    `json:"nu_unico"`
+	ObsFim  string `json:"obs_fim"` // Opcional
+}

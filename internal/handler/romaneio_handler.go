@@ -187,3 +187,53 @@ func (h *RomaneioHandler) HandleConferirItem(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
+
+func (h *RomaneioHandler) HandleFinalizarConferencia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 1. Extração e Validação dos Tokens
+	bearerToken := getTokenFromHeaderRomaneio(r)
+	snkSessionId := getHeaderRomaneio(r, "Snkjsessionid")
+
+	if bearerToken == "" || snkSessionId == "" {
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Tokens ausentes (Authorization ou Snkjsessionid)", nil)
+		return
+	}
+
+	if _, _, err := auth.ValidateToken(bearerToken, h.Config.JwtSecret); err != nil {
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Token inválido", err)
+		return
+	}
+
+	if err := h.Session.ValidateAndUpdate(bearerToken); err != nil {
+		RespondError(w, r, h.Notifier, http.StatusUnauthorized, "Sessão expirada", err)
+		return
+	}
+
+	// 2. Parsing do Body
+	var input sankhya.FinalizarConferenciaInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "JSON inválido", err)
+		return
+	}
+
+	// 3. Validação de campos obrigatórios
+	if input.NuUnico == 0 {
+		RespondError(w, r, h.Notifier, http.StatusBadRequest, "O campo 'nu_unico' é obrigatório", nil)
+		return
+	}
+
+	// 4. Execução
+	ctx := r.Context()
+	resp, err := h.Client.FinalizarConferencia(ctx, input, snkSessionId)
+	if err != nil {
+		RespondError(w, r, h.Notifier, http.StatusInternalServerError, "Erro ao finalizar conferência", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
