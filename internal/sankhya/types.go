@@ -15,11 +15,6 @@ var (
 
 // --- Structs de Login (Service Account & Mobile) ---
 
-type loginResponse struct {
-	BearerToken string `json:"bearerToken"`
-	Error       any    `json:"error"`
-}
-
 type simpleValue struct {
 	Value string `json:"$"`
 }

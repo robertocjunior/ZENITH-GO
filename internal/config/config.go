@@ -13,12 +13,11 @@ type Config struct {
 	ApiUrl         string
 	TransactionUrl string
 	// NOVO CAMPO
-	SankhyaRenewUrl string 
+	SankhyaRenewUrl string
+	SankhyaXToken      string
+	SankhyaClientId     string
+	SankhyaClientSecret string
 
-	AppKey   string
-	Token    string
-	Username string
-	Password string
 	JwtSecret string
 
 	// Logs
@@ -78,12 +77,11 @@ func Load() (*Config, error) {
 		ApiUrl:               os.Getenv("SANKHYA_API_URL"),
 		TransactionUrl:       os.Getenv("SANKHYA_TRANSACTION_URL"),
 		// Carrega nova URL
-		SankhyaRenewUrl:      os.Getenv("SANKHYA_RENEW_URL"), 
+		SankhyaRenewUrl:      os.Getenv("SANKHYA_RENEW_URL"),
+		SankhyaXToken:      os.Getenv("SANKHYA_X_TOKEN"),
+		SankhyaClientId:     os.Getenv("SANKHYA_CLIENT_ID"),
+		SankhyaClientSecret: os.Getenv("SANKHYA_CLIENT_SECRET"),
 		
-		AppKey:               os.Getenv("SANKHYA_APPKEY"),
-		Token:                os.Getenv("SANKHYA_TOKEN"),
-		Username:             os.Getenv("SANKHYA_USERNAME"),
-		Password:             os.Getenv("SANKHYA_PASSWORD"),
 		JwtSecret:            os.Getenv("JWT_SECRET"),
 		LogMaxSize:           logSize,
 		LogMaxAge:            logAge,
@@ -107,6 +105,10 @@ func Load() (*Config, error) {
 	if cfg.RedisAddr == "" {
 		cfg.RedisAddr = "localhost:6379"
 	}
+
+	if cfg.SankhyaXToken == "" || cfg.SankhyaClientId == "" || cfg.SankhyaClientSecret == "" {
+        return nil, fmt.Errorf("novas variáveis de autenticação Sankhya são obrigatórias")
+    }
 
 	return cfg, nil
 }
