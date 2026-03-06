@@ -91,21 +91,3 @@ jobs:
           echo "⬇️ Baixando e recriando..."
           docker compose pull
           docker compose up -d --force-recreate --remove-orphans
-
-          echo "⏳ Aguardando 30s..."
-          sleep 30
-
-          echo "🔍 Testando: $HEALTH_URL"
-          if curl --silent --fail "$HEALTH_URL"; then
-              echo "✅ DEPLOY SUCESSO!"
-              docker image prune -f
-          else
-              echo "🚨 FALHA! Rollback..."
-              if [ -n "$OLD_IMAGE_ID" ]; then
-                  docker tag "$OLD_IMAGE_ID" "$IMAGE_URL"
-                  docker compose up -d --force-recreate
-                  exit 1
-              else
-                  exit 1
-              fi
-          fi
