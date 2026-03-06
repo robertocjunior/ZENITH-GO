@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -40,24 +41,29 @@ func (c *Client) Authenticate(ctx context.Context) error {
 		return nil
 	}
 
-	slog.Info("Autenticando Sistema (Service Account) no Sankhya...")
+	slog.Info("Autenticando Sistema (Service Account) no Sankhya via /authenticate...")
 
-	url := fmt.Sprintf("%s/login", c.cfg.ApiUrl)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer([]byte("{}")))
+	// Prepara a URL e os dados do corpo em formato x-www-form-urlencoded
+	u := fmt.Sprintf("%s/authenticate", c.cfg.ApiUrl)
+	
+	data := url.Values{}
+	data.Set("grant_type", "client_credentials")
+	data.Set("client_id", c.cfg.SankhyaClientId)
+	data.Set("client_secret", c.cfg.SankhyaClientSecret)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", u, strings.NewReader(data.Encode()))
 	if err != nil {
 		return err
 	}
 
-	req.Header.Set("token", c.cfg.Token)
-	req.Header.Set("appkey", c.cfg.AppKey)
-	req.Header.Set("username", c.cfg.Username)
-	req.Header.Set("password", c.cfg.Password)
-	req.Header.Set("Content-Type", "application/json")
+	// Define os Headers obrigatórios
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Token", c.cfg.SankhyaXToken)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		slog.Error("Falha na requisição de login do sistema", "error", err)
-		return fmt.Errorf("falha na requisição de login: %w", err)
+		slog.Error("Falha na requisição de autenticação do sistema", "error", err)
+		return fmt.Errorf("falha na requisição de autenticação: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -65,31 +71,44 @@ func (c *Client) Authenticate(ctx context.Context) error {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		errorMsg := string(bodyBytes)
 		
-		slog.Error("Login do sistema falhou", 
+		slog.Error("Autenticação do sistema falhou", 
 			"status", resp.StatusCode, 
 			"response", errorMsg,
-			"url", url,
+			"url", u,
 		)
-		return fmt.Errorf("login falhou com status %d: %s", resp.StatusCode, errorMsg)
+		return fmt.Errorf("autenticação falhou com status %d: %s", resp.StatusCode, errorMsg)
 	}
 
-	var result loginResponse
+	// Decodifica a resposta JSON
+	var result struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("erro ao decodificar resposta: %w", err)
+		return fmt.Errorf("erro ao decodificar resposta de autenticação: %w", err)
 	}
 
-	if result.BearerToken == "" {
-		jsonErr, _ := json.Marshal(result.Error)
-		slog.Error("Token não retornado", "sankhya_error", string(jsonErr))
-		return fmt.Errorf("token não retornado pelo ERP: %s", string(jsonErr))
+	if result.AccessToken == "" {
+		slog.Error("access_token não retornado pela API do Sankhya")
+		return fmt.Errorf("access_token não retornado")
 	}
 
-	c.bearerToken = result.BearerToken
+	// Atualiza o token e calcula a expiração
+	c.bearerToken = result.AccessToken
 	
-	expiryMinutes := time.Duration(c.cfg.SankhyaTokenExpiryMinutes)
-	c.tokenExpiry = time.Now().Add(expiryMinutes * time.Minute)
+	// Usa o expires_in da resposta (em segundos) ou o padrão do config se vier zerado
+	expiryDuration := time.Duration(result.ExpiresIn) * time.Second
+	if result.ExpiresIn <= 0 {
+		expiryDuration = time.Duration(c.cfg.SankhyaTokenExpiryMinutes) * time.Minute
+	}
+	
+	c.tokenExpiry = time.Now().Add(expiryDuration)
 
-	slog.Info("Autenticação do sistema renovada com sucesso", "expiry", c.tokenExpiry, "minutes_valid", expiryMinutes)
+	slog.Info("Autenticação do sistema renovada com sucesso", 
+		"expiry", c.tokenExpiry, 
+		"expires_in_seconds", result.ExpiresIn,
+	)
 	return nil
 }
 
