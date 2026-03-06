@@ -82,7 +82,6 @@ func (c *Client) GetRomaneios(ctx context.Context, dataFiltro string) ([]Romanei
 func (c *Client) GetRomaneioDetalhes(ctx context.Context, nuFec int) (*RomaneioDetalheResponse, error) {
 	sql := fmt.Sprintf(`
 SELECT 
-    -- 0..10: Dados do Cabeçalho
     FEC.NUFECHAMENTO AS FECHAMENTO, 
     CAB.NUUNICO, 
     TO_CHAR(FEC.DTFECHAMENTO, 'DD/MM/YYYY') AS DATA, 
@@ -94,19 +93,35 @@ SELECT
     CAB.CODUSU, 
     USU.NOMEUSUCPLT AS NOMEUSU, 
     CAB.STATUS AS STATUS_CONF,
-    -- 11..21: Dados do Item (Vindos direto da Conferência)
-    'O' AS TIPO, -- Fixo 'O' conforme solicitado (ajustar se houver TMS/Carga)
-    CONF.CODPROD,
-    PRO.DESCRPROD || ' ' || NVL(PRO.MARCA,'') || ' ' || NVL(CONF.MARCA,'') AS DESCRPROD,
+    -- DADOS DO ITEM
+    CONF.TIPO,
+    -- Se tiver CODPROD, mostra, se não tenta mostrar do TMS, ou vazio
+    NVL(TO_CHAR(CONF.CODPROD), ' ') AS CODPROD,
+    
+    -- CORREÇÃO DA DESCRIÇÃO E MARCA:
+    -- Usa a descrição salva na tabela (CONF). Se não tiver, tenta do cadastro (PRO).
+    -- Concatena Marca apenas UMA vez.
+    NVL(CONF.DESCRPROD, PRO.DESCRPROD) || 
+    CASE WHEN CONF.MARCA IS NOT NULL THEN ' ' || CONF.MARCA ELSE '' END AS DESCRPROD,
+    
     CONF.CODVOL,
-    PRO.REFERENCIA,
+    
+    -- Referencia: Se não tiver no PRO (TMS), tenta buscar da tabela CONF se tivesse salvo (hoje não salva referencia texto no insert, mas pode ajustar se precisar)
+    NVL(PRO.REFERENCIA, ' ') AS REFERENCIA,
+    
     (SELECT SUBSTR(CODBARRA, -4) 
        FROM TGFVOA V 
       WHERE V.CODPROD = CONF.CODPROD 
         AND V.CODVOL = CONF.CODVOL 
         AND ROWNUM = 1) AS CODBARRA4DIG,
+        
     CONF.QUANT AS QTDNEG,
+    
+    -- Peso: Se for TMS (Sem CODPROD), o peso unitário não vem do PRO. 
+    -- Se precisar do peso bruto do TMS, precisaria salvar na tabela também. 
+    -- Abaixo mantém logica original para itens de estoque.
     ROUND(CONF.QUANT * NVL(PRO.PESOBRUTO, 0), 3) AS PESOBRUTO,
+    
     NVL(CONF.CONFERIDO, 'N') AS CONFERIDO,
     CONF.NUMREG,
     (SELECT LISTAGG(CODBARRA, ', ') WITHIN GROUP (ORDER BY CODBARRA)
@@ -116,17 +131,14 @@ SELECT
 FROM AD_ZNTITEMCONF CONF
 JOIN AD_ZNTCONFCAB CAB ON CONF.NUUNICO = CAB.NUUNICO
 JOIN AD_FECCAR FEC ON CONF.NUFECHAMENTO = FEC.NUFECHAMENTO
--- Joins do Cabeçalho
 JOIN AD_FECMOT MOT ON FEC.NUFECHAMENTO = MOT.NUFECHAMENTO
 JOIN TGFPAR PAR ON MOT.CODPARC = PAR.CODPARC
 JOIN TGFVEI VEI ON FEC.CODVEICULO = VEI.CODVEICULO
 LEFT JOIN TSIUSU USU ON USU.CODUSU = CAB.CODUSU
--- Join para Peso Total do Cabeçalho
 LEFT JOIN (
     SELECT NUFECHAMENTO, ROUND(SUM(PESOBRUTO), 3) AS PESO_TOTAL
       FROM AD_FECCOM GROUP BY NUFECHAMENTO
 ) COM_PESO ON FEC.NUFECHAMENTO = COM_PESO.NUFECHAMENTO
--- Join do Produto para pegar Descrição e Peso Unitário
 LEFT JOIN TGFPRO PRO ON CONF.CODPROD = PRO.CODPROD
 WHERE MOT.TIPO = 'M' 
   AND FEC.NUFECHAMENTO = %d
