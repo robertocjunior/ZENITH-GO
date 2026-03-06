@@ -3,7 +3,6 @@ name: CI/CD Pipeline (Hybrid)
 on:
   push:
     branches: [ "main" ]
-    # Seus filtros de ignore
     paths-ignore:
       - 'README.md'
       - 'LICENSE'
@@ -15,7 +14,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
@@ -37,6 +35,10 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase Image Name
+        run: |
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Extract metadata
         id: meta
@@ -74,8 +76,9 @@ jobs:
         run: |
           PROJECT_DIR="/home/nicocr/zenith"
           HEALTH_URL="https://zenith.nicocereais.com.br/apiv1/health"
-          IMAGE_URL="ghcr.io/${{ github.repository }}:latest"
-          IMAGE_URL=$(echo "$IMAGE_URL" | tr '[:upper:]' '[:lower:]')
+          # Converter para minúsculo via shell para o deploy local
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_URL="ghcr.io/$REPO_LOWER:latest"
 
           mkdir -p "$PROJECT_DIR"
           echo "📂 Atualizando infraestrutura..."
@@ -86,8 +89,32 @@ jobs:
           echo "📝 Restaurando segredos..."
           echo "$ENV_FILE_CONTENT" > .env
           
+          # Salva o ID da imagem atual para rollback caso falte saúde no container novo
           OLD_IMAGE_ID=$(docker inspect --format='{{.Image}}' zenith-api-1 2>/dev/null || true)
           
-          echo "⬇️ Baixando e recriando..."
-          docker compose pull
+          echo "⬇️ Baixando nova imagem do GHCR.io..."
+          docker pull "$IMAGE_URL"
+          
+          echo "🚀 Recriando containers..."
           docker compose up -d --force-recreate --remove-orphans
+
+          echo "⏳ Aguardando 30s para estabilização..."
+          sleep 30
+
+          echo "🔍 Testando: $HEALTH_URL"
+          if curl --silent --fail "$HEALTH_URL"; then
+              echo "✅ DEPLOY SUCESSO!"
+              docker image prune -f
+          else
+              echo "🚨 FALHA NO HEALTH CHECK! Iniciando Rollback..."
+              if [ -n "$OLD_IMAGE_ID" ]; then
+                  # Retorna para a imagem anterior usando o ID salvo
+                  docker tag "$OLD_IMAGE_ID" "$IMAGE_URL"
+                  docker compose up -d --force-recreate
+                  echo "♻️ Rollback para imagem anterior concluído."
+                  exit 1
+              else
+                  echo "❌ Sem imagem anterior para rollback."
+                  exit 1
+              fi
+          fi
