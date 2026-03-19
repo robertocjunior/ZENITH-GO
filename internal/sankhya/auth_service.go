@@ -125,35 +125,46 @@ func (c *Client) registerDevice(ctx context.Context, token string, codUsu int, d
 
 // LoginUser realiza o login do usuário final
 func (c *Client) LoginUser(ctx context.Context, username, password string) (string, error) {
-	sysToken, err := c.GetToken(ctx)
-	if err != nil {
-		return "", err
-	}
+	maxAttempts := 3
+	var lastErr error
 
-	reqBody := mobileLoginRequest{ServiceName: "MobileLoginSP.login"}
-	reqBody.RequestBody.NomUsu.Value = username
-	reqBody.RequestBody.Interno.Value = password
-	reqBody.RequestBody.KeepConnected.Value = "S"
-	jsonData, _ := json.Marshal(reqBody)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		sysToken, err := c.GetToken(ctx)
+		if err != nil {
+			return "", err
+		}
 
-	url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=MobileLoginSP.login&outputType=json", c.cfg.ApiUrl)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+sysToken)
-	req.Header.Set("Content-Type", "application/json")
+		reqBody := mobileLoginRequest{ServiceName: "MobileLoginSP.login"}
+		reqBody.RequestBody.NomUsu.Value = username
+		reqBody.RequestBody.Interno.Value = password
+		reqBody.RequestBody.KeepConnected.Value = "S"
+		jsonData, _ := json.Marshal(reqBody)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+		url := fmt.Sprintf("%s/gateway/v1/mge/service.sbr?serviceName=MobileLoginSP.login&outputType=json", c.cfg.ApiUrl)
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+sysToken)
+		req.Header.Set("Content-Type", "application/json")
 
-	var result mobileLoginResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	if result.Status != "1" {
-		return "", fmt.Errorf("credenciais inválidas")
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < maxAttempts {
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			return "", fmt.Errorf("timeout no login após %d tentativas: %w", maxAttempts, lastErr)
+		}
+		defer resp.Body.Close()
+
+		var result mobileLoginResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		if result.Status != "1" {
+			return "", fmt.Errorf("credenciais inválidas")
+		}
+		return result.ResponseBody.JSessionID.Value, nil
 	}
-	return result.ResponseBody.JSessionID.Value, nil
+	return "", lastErr
 }
