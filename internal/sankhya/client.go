@@ -108,18 +108,17 @@ func (c *Client) Authenticate(ctx context.Context) error {
 // GetToken gerencia o token Bearer, renovando se necessário
 func (c *Client) GetToken(ctx context.Context) (string, error) {
 	c.mu.RLock()
-	if c.bearerToken != "" && time.Now().Add(30*time.Second).Before(c.tokenExpiry) {
-		token := c.bearerToken
-		c.mu.RUnlock()
-		return token, nil
-	}
+	token := c.bearerToken
+	expiry := c.tokenExpiry
 	c.mu.RUnlock()
 
-	slog.Info("Token de sistema expirado (localmente) ou inexistente. Renovando...")
-	if err := c.Authenticate(ctx); err != nil {
-		return "", err
+	// Se o token não existe ou está perto de expirar (margem de 1 min)
+	if token == "" || time.Now().Add(1 * time.Minute).After(expiry) {
+		if err := c.Authenticate(ctx); err != nil {
+			return "", err
+		}
 	}
-
+	
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.bearerToken, nil
